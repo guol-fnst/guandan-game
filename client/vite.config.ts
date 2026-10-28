@@ -23,6 +23,7 @@ function resolveGitVersion() {
 }
 
 export default defineConfig({
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [react()],
   define: {
     __GIT_VERSION__: JSON.stringify(resolveGitVersion()),

@@ -1,9 +1,52 @@
 # AI 决策与公开信息分析
 
+默认后端为 Fueternal 的 `Qwen3.8-27`，接口为
+`https://fueternal.com/api/v1/chat/completions`。为兼容已有房间与共享类型，
+内部 provider 仍为 `local`，大厅显示为 Qwen（Fueternal）。DeepSeek 可手动选择。
+
+服务端需要 `LOCAL_LLM_API_KEY`（也可使用 `FUETERNAL_API_KEY`）；
+`LOCAL_LLM_BASE_URL` 可覆盖默认接口根地址。密钥仅放在服务端环境变量或未提交的
+`.env` 中。启动时读取工作目录的 `.env`，已有进程环境变量优先。
+本机仓库根目录和 `server/` 已配置忽略提交的 `.env`，支持从根目录直接启动或
+`npm run dev -w server`。部署时需另行在目标服务器配置环境变量，源码包不包含密钥。
+
+Qwen 请求输出额度为 4096 tokens，为推理和最终动作 JSON 留出空间；
+模型请求仍保留 20 秒超时，失败时继续使用本地策略兜底。
+Qwen 请求显式发送 `enable_thinking=false` 和
+`chat_template_kwargs.enable_thinking=false`；节点是否实际关闭思考需以响应验证。
+
+## 本机部署
+
+- 本机服务：`guandan-game.service`，工作目录 `/root/guandan-game`，端口 `3000`。
+- 公网入口：`https://182222.xyz/guandan/`，由 VPS Nginx 经 FRP `33340` 转发到本机。
+- Nginx 模板：`deploy/nginx/guandan-location.conf`。
+- `.env` 保存模型凭据、`JWT_SECRET` 和 `PUBLIC_BASE_PATH=/guandan`，不提交。
+- 更新：`npm run build -w server` → `VITE_BASE_PATH=/guandan/ npm run build -w client`
+  → `systemctl restart guandan-game`。
+
 当前流程：生成合法动作 → Base7 风格评分、PASS 评分与策略护栏 →
 模型调用门控 → 手牌拆分分析 → 残局隐藏手牌加权抽样续打 →
 将分层候选和分析结果交给房间选择的大模型。
 模型不可用或输出无效时使用本地分析结果兜底。没有接入训练模型或在线训练。
+
+跟牌时，本地动作排序与 PASS 比较共用完整评分（结构变化、回手与资源成本）。
+结构损伤相对于原手牌计算，避免只向出牌动作收取本来就存在的弱牌成本。
+真正的自然散单只有软评分奖励；属于顺子、同花顺、连对或钢板的独特点数不算散单。
+模型的 PASS 保持不出，除非能直接整手走完；报单/报双时已选择跟单/跟对的动作，
+在最终返回前保证使用最大合法单/对，后续小牌优先逻辑不能再降级。
+
+## 可参考的外部实现
+
+以下为 2026-10-28 核对官方仓库说明后的候选，尚未引入为依赖或验证其相对牌力：
+
+- [DanKS](https://github.com/Calix-L/DanKS)，Apache-2.0：共享 Python 规则引擎、
+  结构化候选召回、PPO 与 V3Pro 推理增强代码。官方明确训练权重不随仓库发布，
+  冒烟示例使用随机权重，不能直接当作训练好的强 AI 接入。
+- [Guandan-Poker-Platform](https://github.com/mimaima699-ux/Guandan-Poker-Platform)，
+  MIT：TypeScript 的 `packages/core` 包含规则和多档 AI，可参考拆牌与 rollout 实现。
+  技术栈接近，但仍需校对牌型定义、百搭、升级与进贡规则，并做相同发牌的对战评测。
+- [welkin03/guandan-ai](https://github.com/welkin03/guandan-ai)，MIT：Python 规则和
+  启发式 AI，可作为规则交叉验证的候选；公开版本不包含训练检查点，地区计分和进贡规则并未全部覆盖。
 
 ## 信息边界
 

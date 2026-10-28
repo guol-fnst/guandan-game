@@ -5,10 +5,10 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
-const LOCAL_BASE_URL = 'http://192.168.150.51:3000/v1';
+const LOCAL_BASE_URL = 'https://fueternal.com/api/v1';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
-  provider: 'deepseek',
-  model: 'deepseek-v4-flash',
+  provider: 'local',
+  model: 'Qwen3.8-27',
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
@@ -54,7 +54,7 @@ function getProviderConfig(provider: AiProvider): ProviderConfig {
   if (provider === 'local') {
     return {
       baseUrl: trimTrailingSlash(process.env.LOCAL_LLM_BASE_URL || LOCAL_BASE_URL),
-      apiKey: process.env.LOCAL_LLM_API_KEY || '',
+      apiKey: process.env.LOCAL_LLM_API_KEY || process.env.FUETERNAL_API_KEY || '',
     };
   }
   return {
@@ -67,13 +67,13 @@ export function normalizeAiSelection(
   provider: unknown,
   model: unknown,
 ): AiModelSelection {
-  const normalizedProvider: AiProvider = provider === 'local' ? 'local' : 'deepseek';
+  const normalizedProvider: AiProvider = provider === 'deepseek' ? 'deepseek' : DEFAULT_AI_SELECTION.provider;
   const candidate = typeof model === 'string' && /^[\w./:-]{1,120}$/.test(model.trim())
     ? model.trim()
     : '';
   const configuredDefault = normalizedProvider === 'deepseek'
-    ? (process.env.DEEPSEEK_MODEL || DEFAULT_AI_SELECTION.model)
-    : '';
+    ? (process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash')
+    : LOCAL_AI_MODEL;
   const normalizedModel = isSelectableAiModel(normalizedProvider, candidate)
     ? candidate
     : !candidate && isSelectableAiModel(normalizedProvider, configuredDefault)
@@ -368,13 +368,15 @@ export async function llmFindBestPlay(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'deepseek' ? 512 : 192,
+        max_tokens: normalizedSelection.provider === 'deepseek' ? 512 : 4096,
       };
       if (normalizedSelection.provider === 'deepseek') {
         requestBody.thinking = { type: 'enabled' };
         requestBody.reasoning_effort = 'low';
         requestBody.response_format = { type: 'json_object' };
       } else {
+        requestBody.enable_thinking = false;
+        requestBody.chat_template_kwargs = { enable_thinking: false };
         requestBody.temperature = stage === '残局' ? 0 : 0.25;
       }
       response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {

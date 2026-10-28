@@ -367,7 +367,7 @@ test('opening single play contests an opponent with the weakest loose natural si
   const guarded = enforceTeamStrategy(
     null, legal, hand, last, false, Rank.Three, context,
   );
-  assert.equal(guarded?.rank, Rank.King, 'an LLM PASS receives the same loose-single guard');
+  assert.equal(guarded, null, 'a strategic LLM PASS is preserved even with a loose single');
 });
 
 test('single PASS guard still protects a partner lead, pairs, wildcards and jokers', () => {
@@ -421,7 +421,8 @@ test('opponent consecutive control creates pressure to beat a low single', () =>
   });
   assert.equal(opponentControlStreak(controlled), 2);
   assert.ok(scorePass(hand, last, Rank.Two, controlled) < scorePass(hand, last, Rank.Two, base));
-  assert.equal(findBestPlay(hand, last, false, Rank.Two, base), null);
+  const calmPlay = findBestPlay(hand, last, false, Rank.Two, base);
+  assert.ok(calmPlay === null || canBeat(calmPlay, last, Rank.Two));
   assert.ok(findBestPlay(hand, last, false, Rank.Two, controlled));
 });
 
@@ -658,4 +659,51 @@ test('a loose joker takes an opponent level single to release grouped cards', ()
     'one playable response still competes with PASS');
   assert.equal(shouldUseLlmForDecision(hand, [], last, false, Rank.Two, context), false);
   assert.equal(shouldUseLlmForDecision(hand, responses.slice(0, 1), null, true, Rank.Two, context), false);
+});
+
+test('reported next opponent maximum survives following and smart-policy lowering', () => {
+  for (const size of [1, 2]) {
+    const hand = size === 1
+      ? cards([[Suit.Spade, Rank.Eight], [Suit.Spade, Rank.Ace]])
+      : cards([[Suit.Spade, Rank.Eight], [Suit.Club, Rank.Eight],
+        [Suit.Spade, Rank.Ace], [Suit.Club, Rank.Ace]]);
+    const last: CardPattern = { type: size === 1 ? PatternType.Single : PatternType.Pair,
+      rank: Rank.Five, length: size, cards: Array.from({ length: size }, (_, i) =>
+        ({ id: 90 + i, suit: Suit.Diamond, rank: Rank.Five })) };
+    const context = fourPlayerContext({ lastPlayPlayerIndex: 3,
+      players: fourPlayerContext({}).players.map(player => ({ ...player,
+        cardCount: player.seatIndex === 0 ? hand.length : player.seatIndex === 1 ? size : 8 })),
+    });
+    const legal = generateLegalPlays(hand, Rank.Two).filter(play => canBeat(play, last, Rank.Two));
+    const strongest = legal.find(play => play.rank === Rank.Ace)!;
+    const weaker = legal.find(play => play.rank === Rank.Eight)!;
+    assert.equal(findBestPlay(hand, last, false, Rank.Two, context)?.rank, Rank.Ace);
+    for (const proposed of [strongest, weaker]) {
+      assert.equal(enforceTeamStrategy(proposed, legal, hand, last, false, Rank.Two, context)?.rank,
+        Rank.Ace, 'final policy must not lower the required blocking card');
+    }
+    assert.equal(enforceTeamStrategy(null, legal, hand, last, false, Rank.Two, context), null,
+      'report protection does not force a model PASS into a play');
+  }
+});
+
+test('following evaluates sequence damage against PASS even with unique-rank cards', () => {
+  const hand = cards([
+    [Suit.Spade, Rank.Eight], [Suit.Club, Rank.Nine], [Suit.Diamond, Rank.Ten],
+    [Suit.Heart, Rank.Jack], [Suit.Spade, Rank.Queen],
+    [Suit.Club, Rank.Ace], [Suit.Diamond, Rank.Ace],
+  ]);
+  const last: CardPattern = { type: PatternType.Single, rank: Rank.Seven, length: 1,
+    cards: [{ id: 99, suit: Suit.Spade, rank: Rank.Seven }] };
+  const context = fourPlayerContext({ lastPlayPlayerIndex: 3,
+    players: fourPlayerContext({}).players.map(player => ({ ...player,
+      cardCount: player.seatIndex === 0 ? hand.length : 18 })),
+  });
+  const legal = generateLegalPlays(hand, Rank.Two).filter(play => canBeat(play, last, Rank.Two));
+  const eight = legal.find(play => play.rank === Rank.Eight)!;
+  assert.ok(scorePlay(eight, hand, Rank.Two, false, context)
+    > scorePass(hand, last, Rank.Two, context), 'base scoring alone would follow');
+  assert.equal(findBestPlay(hand, last, false, Rank.Two, context), null,
+    'full scoring preserves the straight and pair instead of leaving fragments');
+  assert.equal(enforceTeamStrategy(null, legal, hand, last, false, Rank.Two, context), null);
 });

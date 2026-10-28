@@ -256,7 +256,8 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     return { ok: true, json: async () => ({ choices: [{ message: { content: '{"action_id":0}' } }] }) } as Response;
   }) as typeof fetch;
   try {
-    await llmFindBestPlay(hands[0], plays, null, true, 2, context, undefined, analysis);
+    await llmFindBestPlay(hands[0], plays, null, true, 2, context,
+      { provider: 'deepseek', model: 'deepseek-v4-flash' }, analysis);
     assert.equal(input.recent_action_history.length, 12);
     assert.equal(input.public_memory.played_cards, undefined);
     assert.ok(input.public_memory.unseen_cards);

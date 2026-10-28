@@ -482,10 +482,7 @@ export function remainingStructureScores(
   const counts = getRankCounts(hand);
   const groups = allPlays.filter(play => play.cards.length > 1);
   const scores = new Map<CardPattern, number>();
-  for (const play of plays) {
-    const used = new Set(play.cards.map(card => card.id));
-    const remaining = hand.filter(card => !used.has(card.id));
-    const available = groups.filter(group => group.cards.every(card => !used.has(card.id)));
+  const residualDamage = (remaining: Card[], available: CardPattern[]) => {
     const groupedIds = new Set(available.flatMap(group => group.cards.map(card => card.id)));
     const residualCounts = getRankCounts(remaining);
     let damage = 0;
@@ -500,10 +497,20 @@ export function remainingStructureScores(
         damage += split ? 65 : 25;
       }
     }
+    return damage;
+  };
+  // PASS retains the current structure. Measure damage relative to that same
+  // baseline instead of charging only the play for already stranded cards.
+  const baselineDamage = residualDamage(hand, groups);
+  for (const play of plays) {
+    const used = new Set(play.cards.map(card => card.id));
+    const remaining = hand.filter(card => !used.has(card.id));
+    const available = groups.filter(group => group.cards.every(card => !used.has(card.id)));
     const after = analysis?.candidates[analysisKey(play)]?.remainingTurns ?? estimator.after(play);
     // Approximate partitions carry less weight than fully searched partitions.
     const weight = whole.exact && after.exact ? 420 : 240;
-    scores.set(play, weight * (whole.turns - after.turns - 1) - damage);
+    scores.set(play, weight * (whole.turns - after.turns - 1)
+      - residualDamage(remaining, available) + baselineDamage);
   }
   return scores;
 }
@@ -516,6 +523,7 @@ function orderCandidates(
   context?: AiDecisionContext,
   analysis?: DecisionAnalysis,
   allPlays?: CardPattern[],
+  evaluatedScores?: Map<CardPattern, number>,
 ): CardPattern[] {
   // Evaluate retained same-type controls for every candidate before truncating
   // the model input. A higher disjoint play is potential recapture, not proof
@@ -544,11 +552,24 @@ function orderCandidates(
   const structure = remainingStructureScores(
     hand, plays, allPlays ?? generateLegalPlays(hand, currentLevel), currentLevel, analysis,
   );
-  const scores = new Map(plays.map(play => [
-    play,
-    scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds) + recaptureBonus(play)
-      + (structure.get(play) || 0),
-  ]));
+  const counts = getRankCounts(hand);
+  const sequenceIds = new Set((allPlays ?? generateLegalPlays(hand, currentLevel))
+    .filter(play => [PatternType.Straight, PatternType.FlushStraight,
+      PatternType.ConsecutivePair, PatternType.Plane].includes(play.type))
+    .flatMap(play => play.cards.map(card => card.id)));
+  const opponentLed = !isFreePlay && context?.players.some(player =>
+    player.seatIndex === context.lastPlayPlayerIndex && player.relation === 'opponent');
+  const scores = evaluatedScores ?? new Map<CardPattern, number>();
+  for (const play of plays) {
+    const card = play.cards[0];
+    // A loose singleton is useful to shed, but a unique rank in a sequence
+    // is not a loose card. This preference never bypasses structure or PASS.
+    const looseBonus = opponentLed && play.type === PatternType.Single
+      && counts.get(card.rank)?.length === 1 && !isJoker(card)
+      && !isWildCard(card, currentLevel) && !sequenceIds.has(card.id) ? 80 : 0;
+    scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds)
+      + recaptureBonus(play) + (structure.get(play) || 0) + looseBonus);
+  }
   return [...plays].sort((a, b) => scores.get(b)! - scores.get(a)!);
 }
 
@@ -628,16 +649,14 @@ export function findBestPlay(
 
   if (legalPlays.length === 0) return null;
   legalPlays = dedupeStrategicPlays(legalPlays);
-  const ordered = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays);
+  const scores = new Map<CardPattern, number>();
+  const ordered = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays, scores);
+  const proposed = enforceNextPlayerReport(ordered[0], legalPlays, currentLevel, context);
   if (!isFreePlay && context) {
-    const singleResponse = preferredOpponentSingleResponse(
-      legalPlays, hand, lastPattern, currentLevel, context,
-    );
-    if (singleResponse) return singleResponse;
     const passScore = scorePass(hand, lastPattern, currentLevel, context);
-    if (scorePlay(ordered[0], hand, currentLevel, false, context) <= passScore) return null;
+    if (!proposed || scores.get(proposed)! <= passScore) return null;
   }
-  return enforceNextPlayerReport(ordered[0] || null, legalPlays, currentLevel, context);
+  return proposed;
 }
 
 export function scorePass(
@@ -684,38 +703,6 @@ export function scorePass(
     score -= 250 * roundStake(context);
   }
   return score;
-}
-
-/**
- * Do not routinely yield an opponent's single while holding a natural loose
- * card that can beat it. Use the weakest sufficient loose single, preserving
- * pairs, level wildcards and jokers. If a short hand has already broken down
- * entirely into distinct singletons, its weakest sufficient control is also
- * allowed so those controls are not stranded at the end.
- */
-function preferredOpponentSingleResponse(
-  candidates: CardPattern[], hand: Card[], last: CardPattern | null, level: number,
-  context?: AiDecisionContext,
-): CardPattern | null {
-  if (!context || !last || last.type !== PatternType.Single) return null;
-  const lastPlayer = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
-  if (lastPlayer?.relation !== 'opponent') return null;
-  const counts = getRankCounts(hand);
-  const singles = candidates.filter(play => play.type === PatternType.Single);
-  if (singles.length === 0) return null;
-  const looseNaturals = singles.filter(play => {
-    const card = play.cards[0];
-    return counts.get(card.rank)?.length === 1
-      && !isWildCard(card, level)
-      && !isJoker(card);
-  });
-  const preferred = looseNaturals.length > 0
-    ? looseNaturals
-    : hand.length <= 5 && [...counts.values()].every(cards => cards.length === 1)
-      ? singles
-      : [];
-  if (preferred.length === 0) return null;
-  return preferred.reduce((weakest, play) => canBeat(weakest, play, level) ? play : weakest);
 }
 
 /** Number of uninterrupted plays by the current trick leader, separated only
@@ -780,7 +767,7 @@ export function enforceTeamStrategy(
   const finish = candidates.find(play => play.cards.length === hand.length);
   if (finish) return finish;
   if (!proposed) {
-    return free ? null : preferredOpponentSingleResponse(candidates, hand, last, level, context);
+    return null;
   }
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
   if (!reportAdjusted) return null;
@@ -808,7 +795,7 @@ export function enforceTeamStrategy(
     // Do not weaken an interception of the partner's trick back into a pass.
     if (partnerLed && last && !blocksReportedSingle(lower, last, hand, level, context)
       && !materiallyBetterSimulation(lower, null, analysis)) continue;
-    return lower;
+    return enforceNextPlayerReport(lower, candidates, level, context);
   }
   return proposed;
 }
