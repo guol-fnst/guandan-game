@@ -690,8 +690,8 @@ export function findBestPlay(
   isFreePlay: boolean,
   currentLevel: number,
   context?: AiDecisionContext,
+  allPlays: CardPattern[] = generateLegalPlays(hand, currentLevel),
 ): CardPattern | null {
-  const allPlays = generateLegalPlays(hand, currentLevel);
   let legalPlays = allPlays;
 
   if (!isFreePlay && lastPattern) {
@@ -890,8 +890,8 @@ export async function findSmartPlay(
   context?: AiDecisionContext,
   selection?: AiModelSelection,
 ): Promise<CardPattern | null> {
-  const ruleResult = findBestPlay(hand, lastPattern, isFreePlay, currentLevel, context);
   const allPlays = generateLegalPlays(hand, currentLevel);
+  const ruleResult = findBestPlay(hand, lastPattern, isFreePlay, currentLevel, context, allPlays);
   let legalPlays = allPlays;
   if (!isFreePlay && lastPattern) {
     legalPlays = legalPlays.filter(play => canBeat(play, lastPattern, currentLevel));
@@ -927,7 +927,7 @@ export async function findSmartPlay(
   });
   const equivalentCountByPlay = new Map(legalPlays.map((play, index) => [play, equivalentCounts[index]]));
   const handCombinations = isFreePlay ? compressed : limitModelCandidates(compressCandidatesForModel(
-    orderCandidates(dedupeStrategicPlays(allPlays), hand, currentLevel, true, context),
+    orderCandidates(dedupeStrategicPlays(allPlays), hand, currentLevel, true, context, undefined, allPlays),
     currentLevel,
   ));
   const analysis = await analyzeDecision(
