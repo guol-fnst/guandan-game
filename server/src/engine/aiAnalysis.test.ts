@@ -509,3 +509,23 @@ test('seat beliefs respect public transfers and distinguish two singles from a p
     assert.ok(!beliefs.some(item => item.seat === 0), 'no redundant inference of our own known hand');
   }
 });
+
+
+test('bomb continuation exposes the lost straight and guards calm waste, but allows urgent defence', async () => {
+  const hand = rankedHand([3, 3, 3, 3, 13, 13, 7, 7, 4, 5, 6]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const bomb = plays.find(play => play.type === PatternType.Bomb4)!;
+  const analysis = await analyzeDecision(hand, plays, [bomb], null, Rank.Two, undefined, findBestPlay,
+    { budgetMs: 200 });
+  assert.equal(analysis.handTurns.turns, 3);
+  assert.equal(analysis.candidates[analysisKey(bomb)].remainingTurns.turns, 5);
+  assert.deepEqual(analysis.candidates[analysisKey(bomb)].continuation,
+    { extraTurns: 3, exact: true, largestRemainingGroup: 2 });
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 8; });
+  const last = generateLegalPlays(rankedHand([Rank.BigJoker]), Rank.Two)[0];
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), null);
+  context.players[1].cardCount = 2;
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), bomb);
+});

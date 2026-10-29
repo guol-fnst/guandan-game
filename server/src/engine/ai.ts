@@ -907,6 +907,12 @@ export function enforceTeamStrategy(
   if (!proposed) {
     return null;
   }
+  const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
+  if (!free && context && isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2
+    && !context.players.some(player => player.finishRank !== null
+      || (player.relation !== 'self' && player.cardCount <= 2))
+    && opponentControlStreak(context) < 2
+    && !materiallyBetterSimulation(proposed, null, analysis)) return null;
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
   if (!reportAdjusted) return null;
   // Reported-count interception is a strong prior, not a legality rule.

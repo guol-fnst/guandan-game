@@ -26,7 +26,7 @@ export interface DecisionAnalysis {
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
   handTurns: TurnEstimate;
-  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute }>;
+  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number } }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
 }
@@ -688,7 +688,14 @@ export async function analyzeDecision(
   for (const [index, play] of candidates.entries()) {
     const endgameRoute = routes[analysisKey(play)];
     if (index >= 40 && !endgameRoute) continue;
-    analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play), endgameRoute };
+    const remainingTurns = estimator.after(play);
+    const used = new Set(play.cards.map(card => card.id));
+    analysis.candidates[analysisKey(play)] = { remainingTurns, endgameRoute,
+      continuation: { extraTurns: 1 + remainingTurns.turns - analysis.handTurns.turns,
+        exact: remainingTurns.exact && analysis.handTurns.exact,
+        largestRemainingGroup: Math.max(0, ...allPlays.filter(group =>
+          group.cards.every(card => !used.has(card.id))).map(group => group.cards.length)) } };
+
   }
   analysis.seatBeliefs = context
     ? inferSeatBeliefs(hand, context, level, Math.min(deadline, start + 140), options.random) : [];
