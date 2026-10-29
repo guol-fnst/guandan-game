@@ -323,6 +323,20 @@ export function scorePlay(
     // Ordinary group damage is measured from the remaining combinations in
     // orderCandidates, rather than charging every split the same fixed price.
   }
+  // Attachments do not strengthen a full house. Price the control pair
+  // separately from its triple rank, including declared wildcard substitutes.
+  if (play.type === PatternType.TriplePair) {
+    const substitutions = new Map((play.substitutions || []).map(card => [card.id, card]));
+    const declared = new Map<Rank, number>();
+    for (const card of play.cards) {
+      const rank = (substitutions.get(card.id) || card).rank;
+      declared.set(rank, (declared.get(rank) || 0) + 1);
+    }
+    const pairRank = [...declared].find(([, count]) => count === 2)?.[0];
+    if (pairRank !== undefined) score -= pairRank >= Rank.SmallJoker ? 360
+      : pairRank === currentLevel ? 240 : pairRank === Rank.Ace ? 100 : pairRank === Rank.King ? 60 : 0;
+  }
+
   if (!isBombPattern(play)) {
     const late = hand.length <= 10 || context?.players.some(p => p.finishRank === null && p.cardCount <= 5);
     score -= play.cards.filter(card => isWildCard(card, currentLevel)).length * (late ? 90 : 260);
@@ -901,7 +915,9 @@ export function enforceTeamStrategy(
   }
   const alternatives = candidates.filter(play => play.cards.length === proposed.cards.length
     && (play.type === proposed.type || (isBombPattern(play) && isBombPattern(proposed)))
-    && canBeat(proposed, play, level)
+    && (canBeat(proposed, play, level)
+      || (play.type === PatternType.TriplePair && proposed.type === PatternType.TriplePair
+        && play.rank === proposed.rank && play !== proposed))
     && (free || canBeat(play, last, level)));
   const ordered = orderCandidates([...alternatives, proposed], hand, level, free, context, analysis);
   for (const lower of ordered) {

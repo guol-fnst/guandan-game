@@ -790,3 +790,26 @@ test('middle-game takeover may release a whole retained group without stealing a
   assert.equal(enforceTeamStrategy(ace, [ace], broken, last, false, Rank.Two, context), null,
     'a takeover needs a real exit, not merely a high card');
 });
+
+
+test('full-house selection preserves joker attachments at equal trick strength', () => {
+  const hand = cards([[Suit.Spade, Rank.Eight], [Suit.Club, Rank.Eight], [Suit.Diamond, Rank.Eight],
+    [Suit.Spade, Rank.SmallJoker], [Suit.Club, Rank.SmallJoker],
+    [Suit.Spade, Rank.Three], [Suit.Club, Rank.Three], [Suit.Spade, Rank.Nine]]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const houses = plays.filter(play => play.type === PatternType.TriplePair && play.rank === Rank.Eight);
+  const expensive = houses.find(play => play.cards.some(card => card.rank === Rank.SmallJoker))!;
+  const cheap = houses.find(play => play.cards.some(card => card.rank === Rank.Three))!;
+  assert.equal(canBeat(expensive, cheap, Rank.Two), false, 'joker attachments do not increase trick strength');
+  assert.ok(scorePlay(cheap, hand, Rank.Two, true) > scorePlay(expensive, hand, Rank.Two, true));
+  const last = { ...cheap, rank: Rank.Seven };
+  for (const free of [true, false]) {
+    const selected = enforceTeamStrategy(expensive, houses, hand, free ? null : last, free, Rank.Two);
+    assert.ok(selected && selected.cards.every(card => card.rank !== Rank.SmallJoker),
+      'both leading and following can replace an equally strong expensive attachment');
+  }
+  assert.equal(enforceTeamStrategy(expensive, [expensive], hand, last, false, Rank.Two), expensive,
+    'do not ban the only available full-house response');
+  assert.equal(enforceTeamStrategy(expensive, [expensive], expensive.cards, null, true, Rank.Two), expensive,
+    'directly finishing with a joker pair remains allowed');
+});
