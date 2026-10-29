@@ -768,3 +768,25 @@ test('passing distinguishes last interception, remaining partner response and ca
   const skipped = { ...base, players: base.players.map(p => p.seatIndex === 1 ? { ...p, cardCount: 0, finishRank: 1 } : p) };
   assert.deepEqual(passPosition(skipped).responders, [2], 'finished seats must not hide a partner response');
 });
+
+
+test('middle-game takeover may release a whole retained group without stealing a closing partner trick', () => {
+  const hand = cards([[Suit.Spade, Rank.Ace], [Suit.Spade, Rank.Three],
+    [Suit.Club, Rank.Three], [Suit.Diamond, Rank.Three]]);
+  const last = generateLegalPlays(cards([[Suit.Club, Rank.Four]]), Rank.Two)[0];
+  const context = fourPlayerContext({ lastPlayPlayerIndex: 2, passCount: 1,
+    recentActions: [{ seatIndex: 2, action: 'play', pattern: last }, { seatIndex: 3, action: 'pass' }] });
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const ace = plays.find(play => play.type === PatternType.Single && play.rank === Rank.Ace)!;
+  assert.equal(findBestPlay(hand, last, false, Rank.Two, context)?.rank, Rank.Ace,
+    'a loose control releases the retained triple');
+  assert.equal(enforceTeamStrategy(ace, [ace], hand, last, false, Rank.Two, context), ace);
+  assert.equal(enforceTeamStrategy(ace, [ace], hand, last, false, Rank.Two,
+    { ...context, passCount: 2 }), null, 'do not steal a trick opponents have already conceded');
+  assert.equal(enforceTeamStrategy(ace, [ace], hand, last, false, Rank.Two,
+    { ...context, players: context.players.map(p => p.relation === 'partner' ? { ...p, cardCount: 2 } : p) }), null,
+    'protect a partner near finishing');
+  const broken = [...hand, { id: 80, rank: Rank.Seven, suit: Suit.Club }];
+  assert.equal(enforceTeamStrategy(ace, [ace], broken, last, false, Rank.Two, context), null,
+    'a takeover needs a real exit, not merely a high card');
+});

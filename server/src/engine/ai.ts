@@ -347,13 +347,13 @@ export function scorePlay(
     // Apply match urgency equally to every bomb so it affects the bomb/pass
     // decision without reversing the ordering between sufficient bombs.
     score += (stake - 1) * 400;
-    if (partnerLed) score -= 20_000;
+    if (partnerLed) score -= 1000;
     if (opponentLed && lastPlayer && lastPlayer.cardCount <= 14) score += 650 * stake;
     if (urgentOpponent) score += 600 * stake;
   }
 
   if (!isFreePlay && !isBombPattern(play)) score += 350 * stake;
-  if (partnerLed) score -= 15_000;
+  if (partnerLed) score -= 500;
 
   if (isFreePlay && context) {
     const plan = teamPlan ?? buildTeamPlan(hand, [], context);
@@ -394,6 +394,30 @@ export function scorePlay(
   return score;
 }
 
+/** A concrete low-cost takeover exception for the middle game, where paired
+ * rollout evidence is usually unavailable. Preserve a teammate near finishing. */
+function productivePartnerTakeover(
+  play: CardPattern, hand: Card[], allPlays: CardPattern[], last: CardPattern | null,
+  level: number, context?: AiDecisionContext,
+): boolean {
+  if (!context || !last || context.lastPlayPlayerIndex !== context.partnerSeatIndex) return false;
+  const partner = context.players.find(player => player.relation === 'partner');
+  if (!partner || partner.finishRank !== null || partner.cardCount < 6 || passPosition(context).closesTrick) return false;
+  if (![PatternType.Single, PatternType.Pair].includes(play.type) || isBombPattern(last)
+    || effectiveRank(last.rank, level) > Rank.Ten
+    || effectiveRank(play.rank, level) < effectiveRank(Rank.Ace, level)) return false;
+  if (context.players.some(player => player.relation === 'opponent' && player.finishRank === null
+    && player.cardCount <= 2)) return false;
+  const counts = getRankCounts(hand);
+  if (play.cards.some(card => isWildCard(card, level)
+    || (counts.get(card.rank)?.length || 0) !== play.cards.length)) return false;
+  const used = new Set(play.cards.map(card => card.id));
+  const remaining = hand.length - used.size;
+  // The retained group must actually exist and use no card spent taking over.
+  return remaining >= 3 && allPlays.some(exit => exit.cards.length === remaining
+    && exit.cards.every(card => !used.has(card.id)));
+}
+
 function scoreTeamPlan(
   play: CardPattern, hand: Card[], allPlays: CardPattern[], level: number,
   free: boolean, plan: TeamPlan, context?: AiDecisionContext,
@@ -403,6 +427,15 @@ function scoreTeamPlan(
   const used = new Set(play.cards.map(card => card.id));
   const remaining = hand.filter(card => !used.has(card.id));
   let score = 0;
+  if (!free) {
+    const last = [...(context.actionHistory || context.recentActions)].reverse()
+      .find(action => action.action === 'play')?.pattern || null;
+    if (productivePartnerTakeover(play, hand, allPlays, last, level, context)) score += 1100;
+    else if (context.lastPlayPlayerIndex !== context.partnerSeatIndex
+      && !isBombPattern(play) && effectiveRank(play.rank, level) >= effectiveRank(Rank.Ace, level)
+      && remaining.length >= 3 && allPlays.some(exit => exit.cards.length === remaining.length
+        && exit.cards.every(card => !used.has(card.id)))) score += 220;
+  }
   if (plan.goal === 'finish_self') {
     score += play.cards.length * 20;
   } else if (plan.goal === 'block_opponent') {
@@ -704,6 +737,12 @@ export function findBestPlay(
   const ordered = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays, scores);
   const proposed = enforceNextPlayerReport(ordered[0], legalPlays, currentLevel, context);
   if (!isFreePlay && context) {
+    // The rollout policy uses this entry point too. Finite partner preferences
+    // must not make simulated teammates steal tricks without a concrete plan.
+    if (proposed && proposed.cards.length !== hand.length && lastPattern
+      && context.lastPlayPlayerIndex === context.partnerSeatIndex
+      && !blocksReportedSingle(proposed, lastPattern, hand, currentLevel, context)
+      && !productivePartnerTakeover(proposed, hand, allPlays, lastPattern, currentLevel, context)) return null;
     const passScore = scorePass(hand, lastPattern, currentLevel, context);
     if (!proposed || scores.get(proposed)! <= passScore) return null;
   }
@@ -738,7 +777,7 @@ export function scorePass(
   hand: Card[], last: CardPattern | null, level: number, context: AiDecisionContext,
 ): number {
   const lastPlayer = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
-  if (lastPlayer?.relation === 'partner') return 100_000;
+  if (lastPlayer?.relation === 'partner') return passPosition(context).closesTrick ? 760 : 600;
   // Defensive fallback for incomplete/synthetic contexts: never pass on a
   // trick attributed to ourselves.
   if (lastPlayer?.relation === 'self') return -10_000;
@@ -857,7 +896,8 @@ export function enforceTeamStrategy(
     && context.lastPlayPlayerIndex === context.partnerSeatIndex;
   if (partnerLed && last) {
     if (!blocksReportedSingle(proposed, last, hand, level, context)
-      && !materiallyBetterSimulation(proposed, null, analysis)) return null;
+      && !materiallyBetterSimulation(proposed, null, analysis)
+      && !productivePartnerTakeover(proposed, hand, generateLegalPlays(hand, level), last, level, context)) return null;
   }
   const alternatives = candidates.filter(play => play.cards.length === proposed.cards.length
     && (play.type === proposed.type || (isBombPattern(play) && isBombPattern(proposed)))
@@ -873,7 +913,8 @@ export function enforceTeamStrategy(
       || blocksReportedSingle(proposed, lower, hand, level, context)) continue;
     // Do not weaken an interception of the partner's trick back into a pass.
     if (partnerLed && last && !blocksReportedSingle(lower, last, hand, level, context)
-      && !materiallyBetterSimulation(lower, null, analysis)) continue;
+      && !materiallyBetterSimulation(lower, null, analysis)
+      && !productivePartnerTakeover(lower, hand, generateLegalPlays(hand, level), last, level, context)) continue;
     const adjusted = enforceNextPlayerReport(lower, candidates, level, context);
     return materiallyBetterSimulation(lower, adjusted, analysis) ? lower : adjusted;
   }
