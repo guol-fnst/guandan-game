@@ -24,6 +24,7 @@ export interface SampleResult {
 export interface DecisionAnalysis {
   teamPlan?: TeamPlan;
   teamRoutes?: TeamRoute[];
+  seatBeliefs?: SeatBelief[];
   handTurns: TurnEstimate;
   candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute }>;
   passSimulation?: SampleResult;
@@ -356,44 +357,66 @@ export function sampleHiddenHands(
   return offset === pool.length ? hands : null;
 }
 
-function passConsistencyWeight(sampled: Card[][], context: AiDecisionContext, level: number): number {
+/** A bounded behavioral likelihood, not a hard card constraint. */
+export function behaviorConsistencyWeight(sampled: Card[][], context: AiDecisionContext, level: number): number {
   const replayHands = sampled.map(cards => [...cards]);
   for (const action of context.actionHistory || []) {
     if (action.action === 'play' && action.pattern) replayHands[action.seatIndex].push(...action.pattern.cards);
   }
+  const finished = new Set(replayHands.flatMap((cards, seat) => cards.length ? [] : [seat]));
   let trick: CardPattern | null = null;
   let leader = -1;
   let passes = 0;
-  let weight = 1;
+  let logWeight = 0;
+  const wild = (card: Card) => card.rank === level && card.suit === Suit.Heart;
   for (const action of context.actionHistory || []) {
+    const cards = replayHands[action.seatIndex];
+    const counts = rankCounts(cards);
     if (action.action === 'play' && action.pattern) {
+      // Repeated needless splits are weaker evidence for that sampled holding.
+      // Never penalise a forced reply, direct finish, or preserving a high control.
+      if (action.pattern.type === PatternType.Single && cards.length > 1) {
+        const played = action.pattern.cards[0];
+        const looseAlternative = cards.some(card => card.id !== played.id && counts.get(card.rank) === 1
+          && !wild(card) && effectiveRank(card.rank, level) < effectiveRank(played.rank, level)
+          && (!trick || canBeat({ type: PatternType.Single, rank: card.rank, length: 1, cards: [card] }, trick, level)));
+        if ((counts.get(played.rank) || 0) >= 2 && looseAlternative) logWeight += Math.log(0.8);
+      }
       const ids = new Set(action.pattern.cards.map(card => card.id));
-      replayHands[action.seatIndex] = replayHands[action.seatIndex].filter(card => !ids.has(card.id));
+      replayHands[action.seatIndex] = cards.filter(card => !ids.has(card.id));
+      if (!replayHands[action.seatIndex].length) finished.add(action.seatIndex);
       trick = action.pattern;
       leader = action.seatIndex;
       passes = 0;
       continue;
     }
     if (!trick) continue;
-    // Passing a partner is expected. Opponent-led single/pair passes are only
-    // soft evidence because conserving controls and structures is legitimate.
+    // Passing a teammate is normal. Passing the enemy is soft evidence only
+    // when an inexpensive response exists; pairs, bombs and wildcards matter.
     if (leader >= 0 && leader % 2 !== action.seatIndex % 2) {
-      const cards = replayHands[action.seatIndex];
-      let responses = 0;
+      let easyResponses = 0;
       if (trick.type === PatternType.Single) {
-        responses = cards.filter(card =>
-          effectiveRank(card.rank, level) > effectiveRank(trick!.rank, level)).length;
+        for (const card of cards) {
+          if (counts.get(card.rank) !== 1 || wild(card)
+            || effectiveRank(card.rank, level) <= effectiveRank(trick.rank, level)) continue;
+          easyResponses += effectiveRank(card.rank, level) >= effectiveRank(Rank.Ace, level) ? 0.15 : 0.45;
+        }
       } else if (trick.type === PatternType.Pair) {
-        const counts = rankCounts(cards);
-        responses = [...counts].filter(([rank, count]) => count >= 2
-          && effectiveRank(rank, level) > effectiveRank(trick!.rank, level)).length;
+        for (const [rank, count] of counts) {
+          if (count !== 2 || cards.some(card => card.rank === rank && wild(card))
+            || effectiveRank(rank, level) <= effectiveRank(trick.rank, level)) continue;
+          easyResponses += effectiveRank(rank, level) >= effectiveRank(Rank.Ace, level) ? 0.15 : 0.45;
+        }
       }
-      weight /= 1 + responses * 0.45;
+      const urgency = replayHands[leader].length <= 2 ? 1.5 : 1;
+      logWeight -= Math.log1p(easyResponses * urgency);
     }
     passes++;
-    if (passes >= 3) { trick = null; leader = -1; passes = 0; }
+    const needed = 4 - finished.size - (finished.has(leader) ? 0 : 1);
+    if (passes >= needed) { trick = null; leader = -1; passes = 0; }
   }
-  return Math.max(weight, 1e-6);
+  // Keep all allocations possible and prevent long histories collapsing belief.
+  return Math.exp(Math.max(-6, logWeight));
 }
 
 /** Draw several public-count-consistent deals and softly prefer those which
@@ -406,7 +429,7 @@ export function sampleHiddenHandsWeighted(
   for (let index = 0; index < proposals; index++) {
     const hands = sampleHiddenHands(hand, context, knowledge, random);
     if (!hands) return null;
-    choices.push({ hands, weight: passConsistencyWeight(hands, context, level) });
+    choices.push({ hands, weight: behaviorConsistencyWeight(hands, context, level) });
   }
   const total = choices.reduce((sum, choice) => sum + choice.weight, 0);
   let pick = random() * total;
@@ -415,6 +438,40 @@ export function sampleHiddenHandsWeighted(
     if (pick <= 0) return choice.hands;
   }
   return choices[choices.length - 1]?.hands || null;
+}
+
+export interface SeatBelief {
+  seat: number;
+  samples: number;
+  /** Only present for a two-card hand; estimated from public evidence. */
+  pairProbability?: number;
+  highControlProbability: number;
+}
+
+export function inferSeatBeliefs(
+  hand: Card[], context: AiDecisionContext, level: number,
+  deadline: number, random: () => number = Math.random,
+): SeatBelief[] {
+  const knowledge = buildPublicKnowledge(hand, context);
+  if (!knowledge) return [];
+  const totals = context.players.filter(p => p.relation !== 'self' && p.finishRank === null)
+    .map(player => ({ player, pairs: 0, controls: 0 }));
+  let samples = 0;
+  for (; samples < 16 && performance.now() < deadline; samples++) {
+    const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, random);
+    if (!deal) break;
+    for (const total of totals) {
+      const cards = deal[total.player.seatIndex];
+      if (cards.length === 2 && (cards[0].rank === cards[1].rank
+        || (cards.every(card => card.rank <= Rank.Ace)
+          && cards.some(card => card.rank === level && card.suit === Suit.Heart)))) total.pairs++;
+      if (cards.some(card => effectiveRank(card.rank, level) >= effectiveRank(Rank.Ace, level))) total.controls++;
+    }
+  }
+  if (!samples) return [];
+  return totals.map(({ player, pairs, controls }) => ({ seat: player.seatIndex, samples,
+    pairProbability: player.cardCount === 2 ? pairs / samples : undefined,
+    highControlProbability: controls / samples }));
 }
 
 function bitCount(mask: number): number {
@@ -631,6 +688,14 @@ export async function analyzeDecision(
     if (index >= 40 && !endgameRoute) continue;
     analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play), endgameRoute };
   }
+  analysis.seatBeliefs = context
+    ? inferSeatBeliefs(hand, context, level, Math.min(deadline, start + 140), options.random) : [];
+  const partnerBelief = analysis.seatBeliefs.find(belief => belief.seat === context?.partnerSeatIndex);
+  if (analysis.teamPlan?.goal === 'feed_partner' && partnerBelief && partnerBelief.samples >= 8
+    && partnerBelief.pairProbability !== undefined && partnerBelief.pairProbability < 0.35) {
+    analysis.teamPlan = { goal: 'feed_partner', feedType: PatternType.Single,
+      reason: '公开行为加权的抽样更支持两张散单；优先尝试送单，仍比较送对路线' };
+  }
   analysis.teamRoutes = buildTeamRoutes(hand, allPlays, candidates, last, level, context,
     analysis.candidates, options.generateReplies);
   const finish = () => {
@@ -689,7 +754,7 @@ export async function analyzeDecision(
     const sampled = deals ? deals[sample]
       : sampleHiddenHandsWeighted(hand, context, knowledge, level, options.random);
     if (!sampled) { analysis.simulation.status = 'inconsistent_public_state'; break; }
-    const sampleWeight = deals ? passConsistencyWeight(sampled, context, level) : 1;
+    const sampleWeight = deals ? behaviorConsistencyWeight(sampled, context, level) : 1;
     const replyBranches: Array<ReplyBranch | undefined> = [undefined];
     if (options.generateReplies && context.players.reduce((n, p) => n + p.cardCount, 0) <= 12) {
       replyBranches.push({ mode: 'control', generate: options.generateReplies },

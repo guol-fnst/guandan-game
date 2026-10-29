@@ -7,6 +7,7 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
+  behaviorConsistencyWeight, inferSeatBeliefs,
 } from './aiAnalysis';
 import { llmFindBestPlay } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
@@ -472,4 +473,39 @@ test('team routes compare feeding mixed singles, seat interception, takeover and
     { ...context, publicTransfers: [] }, {}, generateLegalPlays);
   assert.equal(unknown.filter(route => route.goal === 'feed_partner').length, 2,
     'unknown two-card partner gets single and pair alternatives');
+});
+
+
+test('behavior inference distinguishes cheap passes, protected groups and teammate passes', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hands = [take(Rank.Three), take(Rank.Four), [...take(Rank.Ten), ...take(Rank.Five)], take(Rank.Six)];
+  const context = contextFor(hands);
+  const lead = generateLegalPlays(take(Rank.Seven), Rank.Two)[0];
+  context.actionHistory = [{ seatIndex: 1, action: 'play', pattern: lead }, { seatIndex: 2, action: 'pass' }];
+  const loose = behaviorConsistencyWeight(hands, context, Rank.Two);
+  const protectedHands = hands.map(cards => [...cards]);
+  protectedHands[2] = take(Rank.Ten, 2);
+  assert.ok(loose < behaviorConsistencyWeight(protectedHands, context, Rank.Two),
+    'a pass is less surprising when beating would split a pair');
+  context.actionHistory[0].seatIndex = 0;
+  assert.equal(behaviorConsistencyWeight(hands, context, Rank.Two), 1, 'passing partner is not negative evidence');
+  context.actionHistory = [{ seatIndex: 2, action: 'play', pattern: generateLegalPlays(take(Rank.Ten).map(c => ({ ...c, id: 999 })), Rank.Two)[0] }];
+  assert.ok(behaviorConsistencyWeight(hands, context, Rank.Two) < 1, 'unnecessary group splitting is soft evidence');
+  assert.ok(loose > 0, 'a pass never rules a holding out');
+});
+
+test('seat beliefs respect public transfers and distinguish two singles from a pair', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  for (const partner of [[...take(Rank.Five), ...take(Rank.Seven)], take(Rank.Five, 2)]) {
+    const hands = [take(Rank.Three), take(Rank.Four), partner, take(Rank.Six)];
+    const context = contextFor(hands);
+    context.publicTransfers = partner.map(card => ({ fromSeat: 1, toSeat: 2, card }));
+    const beliefs = inferSeatBeliefs(hands[0], context, Rank.Two, performance.now() + 1000, () => 0.5);
+    const belief = beliefs.find(item => item.seat === 2)!;
+    assert.equal(belief.samples, 16);
+    assert.equal(belief.pairProbability, partner[0].rank === partner[1].rank ? 1 : 0);
+    assert.ok(!beliefs.some(item => item.seat === 0), 'no redundant inference of our own known hand');
+  }
 });

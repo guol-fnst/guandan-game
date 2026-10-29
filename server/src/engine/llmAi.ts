@@ -312,6 +312,8 @@ export async function llmFindBestPlay(
         .flatMap(action => action.pattern?.cards || []), currentLevel),
     })) || [],
     public_inference: knowledge ? {
+      seat_beliefs: analysis?.seatBeliefs,
+      belief_caveat: '仅16份以内公开行为加权抽样，非真实底牌或校准概率；高牌存在不代表必然能回手',
       unseen_controls: describeHand(knowledge.unseen.filter(card =>
         card.rank >= Rank.King || card.rank === currentLevel
       ), currentLevel),
