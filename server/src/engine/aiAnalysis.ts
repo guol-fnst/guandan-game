@@ -101,6 +101,9 @@ export function buildTeamPlan(
   }
   const partner = context?.players.find(p => p.relation === 'partner');
   const opponents = context?.players.filter(p => p.relation === 'opponent' && p.finishRank === null) || [];
+  if (partner?.finishRank === 1) return { goal: 'finish_self', reason: context?.players.some(p => p.relation === 'opponent' && p.finishRank === 2)
+      ? '对家已头游，二游已定；争三游'
+      : '对家已头游，优先争二游形成双上；对手连续走牌时应主动争权' };
   const threat = opponents.filter(p => p.cardCount <= 2).sort((a, b) => a.cardCount - b.cardCount)[0];
   if (threat) return { goal: 'block_opponent', threatSeat: threat.seatIndex,
     reason: '对手接近走完，优先防守并保留回手' };
@@ -110,7 +113,6 @@ export function buildTeamPlan(
       reason: partner.cardCount === 1 ? '争取牌权后领小单送对家'
         : '争取牌权后尝试领小对；对家两张不保证是对子' };
   }
-  if (partner?.finishRank === 1) return { goal: 'finish_self', reason: '对家已头游，争取双上' };
   // A cheap two-play partition check on short hands, reusing legal actions.
   if (hand.length <= 10) {
     const bits = new Map(hand.map((card, i) => [card.id, 1 << i]));

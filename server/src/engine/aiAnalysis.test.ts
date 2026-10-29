@@ -5,7 +5,7 @@ import { createDeck } from './card';
 import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, createTurnEstimator,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs,
 } from './aiAnalysis';
@@ -528,4 +528,30 @@ test('bomb continuation exposes the lost straight and guards calm waste, but all
   assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), null);
   context.players[1].cardCount = 2;
   assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), bomb);
+});
+
+
+test('partner head changes the objective and unmeasured PASS cannot ignore a local interception', () => {
+  const hand = rankedHand([Rank.BigJoker, Rank.Three, Rank.Four]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const joker = plays.find(play => play.rank === Rank.BigJoker)!;
+  const last = generateLegalPlays(rankedHand([Rank.King]), Rank.Two)[0];
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.players[1].cardCount = 4;
+  context.players[2].finishRank = 1;
+  context.players[3].cardCount = 8;
+  assert.equal(buildTeamPlan(hand, plays, context).goal, 'finish_self');
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, Rank.Two, context, undefined, joker), joker);
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, Rank.Two, context, undefined, null), null,
+    'no interception is invented when local policy also passes');
+  context.players[2].finishRank = null;
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, Rank.Two, context, undefined, joker), null,
+    'normal midgame model PASS is preserved');
+  context.players[2].finishRank = 1;
+  context.players[1].finishRank = 2;
+  context.players[1].cardCount = 0;
+  assert.match(buildTeamPlan(hand, plays, context).reason, /争三游/);
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, Rank.Two, context, undefined, joker), null,
+    'cannot pretend an already finished opponent is still about to finish');
 });

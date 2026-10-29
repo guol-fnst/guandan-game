@@ -955,12 +955,23 @@ export function enforceTeamStrategy(
 export function finalizeAiDecision(
   proposed: CardPattern | null, candidates: CardPattern[], hand: Card[],
   last: CardPattern | null, free: boolean, level: number,
-  context?: AiDecisionContext, analysis?: DecisionAnalysis,
+  context?: AiDecisionContext, analysis?: DecisionAnalysis, ruleFallback?: CardPattern | null,
 ): CardPattern | null {
   const guard = (play: CardPattern | null) => enforceTeamStrategy(
     play, candidates, hand, last, free, level, context, analysis,
   );
   let selected = guard(proposed);
+  // Large hands have no paired endgame rollout. Once our partner is first,
+  // repeated model PASS must not ignore a concrete local interception while
+  // the opponent runs down their hand. Keep measured comparisons authoritative.
+  const leader = context?.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
+  if (!selected && !free && context && !analysis?.passSimulation
+    && context.players.some(player => player.relation === 'partner' && player.finishRank === 1)
+    && leader?.relation === 'opponent' && leader.finishRank === null
+    && (leader.cardCount <= 5 || opponentControlStreak(context) >= 2)) {
+    const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context) : ruleFallback;
+    if (fallback && candidates.some(play => analysisKey(play) === analysisKey(fallback))) selected = guard(fallback);
+  }
   if (selected?.cards.length === hand.length || !analysis) return selected;
   const resultOf = (play: CardPattern | null) => play
     ? analysis.candidates[analysisKey(play)]?.simulation : analysis.passSimulation;
@@ -1024,6 +1035,12 @@ export async function findSmartPlay(
     return index >= 0 ? compressed.equivalentCounts[index] : 1;
   });
   const equivalentCountByPlay = new Map(legalPlays.map((play, index) => [play, equivalentCounts[index]]));
+  if (ruleResult && !legalPlays.some(play => analysisKey(play) === analysisKey(ruleResult))) {
+    const replacement = legalPlays.findIndex(play => play.type === ruleResult.type && play.rank === ruleResult.rank);
+    if (replacement >= 0) legalPlays[replacement] = ruleResult;
+    else legalPlays.push(ruleResult);
+    equivalentCountByPlay.set(ruleResult, 1);
+  }
   const handCombinations = isFreePlay ? compressed : limitModelCandidates(compressCandidatesForModel(
     orderCandidates(dedupeStrategicPlays(allPlays), hand, currentLevel, true, context, undefined, allPlays),
     currentLevel,
@@ -1052,12 +1069,12 @@ export async function findSmartPlay(
     );
     // undefined means the model was unavailable/invalid; null is an intentional pass.
     if (llmResult !== undefined) return finalizeAiDecision(
-      llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis,
+      llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
     );
   } catch {}
 
   return finalizeAiDecision(
-    fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis,
+    fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
   );
 }
 
