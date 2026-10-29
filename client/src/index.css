@@ -1562,3 +1562,30 @@ button:disabled { cursor: default; }
     overflow-y: auto;
   }
 }
+
+.card-report-notice {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  max-width: 90vw;
+  padding: 12px 20px;
+  border: 2px solid #ffd66b;
+  border-radius: 12px;
+  background: #493618;
+  color: #fff1b8;
+  font-weight: 800;
+  box-shadow: 0 4px 24px #0006;
+  pointer-events: none;
+}
+.player-info.has-card-report { box-shadow: 0 0 0 2px #ffd66b88; }
+.card-report-badge {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #ffd66b;
+  color: #362300;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.card-report-badge.is-urgent { background: #ff786c; color: #250500; }

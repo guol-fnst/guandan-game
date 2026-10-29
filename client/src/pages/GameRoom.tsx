@@ -25,6 +25,7 @@ export default function GameRoom() {
 
   const [playerActions, setPlayerActions] = useState<Record<string, PlayerAction>>({});
   const [errorMsg, setErrorMsg] = useState('');
+  const [reportNotice, setReportNotice] = useState('');
   const [waiting, setWaiting] = useState(!gameState || gameState.phase === 'waiting');
   const [selectedSeatPlayerId, setSelectedSeatPlayerId] = useState<string | null>(null);
   const [spectatorHands, setSpectatorHands] = useState<SpectatorHands>({});
@@ -33,6 +34,56 @@ export default function GameRoom() {
   const [spectatorDialogOpen, setSpectatorDialogOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
   const [actionSecondsLeft, setActionSecondsLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !isLoggedIn) return;
+    let audio: AudioContext | undefined;
+    const unlockSound = () => {
+      try {
+        audio ??= new AudioContext();
+        void audio.resume().catch(() => {});
+      } catch { /* Visual reports remain available if audio is unsupported. */ }
+    };
+    const onReport = ({ playerId, count }: { playerId: string; count: number }) => {
+      if (count <= 0) return;
+      const player = useGameStore.getState().gameState?.players.find(p => p.id === playerId);
+      setReportNotice(`${player?.name || '玩家'}${count === 1 ? '报单' : count === 2 ? '报双' : '报牌'}：剩余 ${count} 张`);
+      if (!audio || audio.state !== 'running') return;
+      const now = audio.currentTime;
+      [660, 880].forEach((frequency, index) => {
+        const tone = audio!.createOscillator();
+        const volume = audio!.createGain();
+        const start = now + index * 0.17;
+        tone.frequency.value = frequency;
+        volume.gain.setValueAtTime(0, start);
+        volume.gain.linearRampToValueAtTime(0.12, start + 0.015);
+        volume.gain.exponentialRampToValueAtTime(0.001, start + 0.14);
+        tone.connect(volume);
+        volume.connect(audio!.destination);
+        tone.start(start);
+        tone.stop(start + 0.15);
+      });
+    };
+    const clearReport = () => setReportNotice('');
+    window.addEventListener('pointerdown', unlockSound);
+    window.addEventListener('keydown', unlockSound);
+    socket.on('card_count_report', onReport);
+    socket.on('game_started', clearReport);
+    return () => {
+      window.removeEventListener('pointerdown', unlockSound);
+      window.removeEventListener('keydown', unlockSound);
+      socket.off('card_count_report', onReport);
+      socket.off('game_started', clearReport);
+      if (audio) void audio.close().catch(() => {});
+    };
+  }, [roomId, spectatorMode, isLoggedIn]);
+
+  useEffect(() => {
+    if (!reportNotice) return;
+    const timer = window.setTimeout(() => setReportNotice(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [reportNotice]);
 
   useEffect(() => {
     const deadline = gameState?.actionDeadline;
@@ -308,6 +359,7 @@ export default function GameRoom() {
 
   return (
     <div className={`game-room${waiting ? ' is-waiting' : ''}${isSpectator ? ' is-spectator' : ''}`} style={styles.container}>
+      {reportNotice && <div className="card-report-notice" role="status" aria-live="polite">{reportNotice}</div>}
       <div className="game-table" style={styles.table}>
         <div className="duel-scoreboard" aria-label="双方当前级牌">
           <div className={`duel-score-team ${isSpectator ? (leadingTeam === 0 ? 'is-leading' : 'is-trailing') : (ownIsLeading ? 'is-leading' : 'is-trailing')}`}>
