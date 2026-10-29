@@ -451,14 +451,18 @@ export function createTurnEstimator(hand: Card[], plays: CardPattern[], deadline
 }
 
 interface Outcome { reward: number; win: boolean; doubleWin: boolean }
+type GenerateReplies = (hand: Card[], level: number) => CardPattern[];
+interface ReplyBranch { mode: 'control' | 'hold'; generate: GenerateReplies }
 
 /** One sampled continuation. Each simulated policy sees only its own sampled
  * hand and public state, never the other sampled hands. */
 export function rollout(
   initialHands: Card[][], root: CardPattern | null, last: CardPattern | null,
   level: number, context: AiDecisionContext, choose: ChoosePlay, deadline: number,
+  replyBranch?: ReplyBranch,
 ): Outcome | null {
   const hands = initialHands.map(cards => [...cards]);
+  let branched = false;
   const finishes = context.players.filter(player => player.finishRank !== null)
     .sort((a, b) => a.finishRank! - b.finishRank!).map(player => player.seatIndex);
   let seat = context.selfSeatIndex;
@@ -491,7 +495,23 @@ export function rollout(
         relation: i === seat ? 'self' : i === (seat + 2) % 4 ? 'partner' : 'opponent',
       })),
     };
-    const action = step === 0 ? root : choose(hands[seat], trick, !trick, level, simContext);
+    let action = step === 0 ? root : choose(hands[seat], trick, !trick, level, simContext);
+    // Branch only at the first opposing response. The response policy sees its
+    // own sampled hand and public trick, never the other sampled hands.
+    if (step > 0 && !branched && replyBranch && trick
+      && seat % 2 !== context.selfSeatIndex % 2) {
+      branched = true;
+      if (replyBranch.mode === 'hold') action = null;
+      else {
+        const replies = replyBranch.generate(hands[seat], level).filter(play => canBeat(play, trick, level));
+        const finish = replies.find(play => play.cards.length === hands[seat].length);
+        const controls = replies.filter(play => !isBombPattern(play)).sort((a, b) =>
+          canBeat(a, b, level) ? -1 : canBeat(b, a, level) ? 1 : 0);
+        const bombs = replies.filter(isBombPattern).sort((a, b) =>
+          canBeat(a, b, level) ? 1 : canBeat(b, a, level) ? -1 : 0);
+        action = finish || controls[0] || bombs[0] || null;
+      }
+    }
     if (action) {
       if (!canBeat(action, trick, level)) return null;
       const ids = new Set(action.cards.map(card => card.id));
@@ -527,7 +547,7 @@ export async function analyzeDecision(
   hand: Card[], allPlays: CardPattern[], candidates: CardPattern[],
   last: CardPattern | null, level: number, context: AiDecisionContext | undefined,
   choose: ChoosePlay,
-  options: { budgetMs?: number; maxSamples?: number; random?: () => number } = {},
+  options: { budgetMs?: number; maxSamples?: number; random?: () => number; generateReplies?: GenerateReplies } = {},
 ): Promise<DecisionAnalysis> {
   const start = performance.now();
   const budget = Math.max(0, options.budgetMs ?? 800);
@@ -597,16 +617,25 @@ export async function analyzeDecision(
       : sampleHiddenHandsWeighted(hand, context, knowledge, level, options.random);
     if (!sampled) { analysis.simulation.status = 'inconsistent_public_state'; break; }
     const sampleWeight = deals ? passConsistencyWeight(sampled, context, level) : 1;
-    const results = roots.map(root => rollout(sampled, root, last, level, context, policy, deadline));
-    if (results.some(result => result === null)) break;
+    const replyBranches: Array<ReplyBranch | undefined> = [undefined];
+    if (options.generateReplies && context.players.reduce((n, p) => n + p.cardCount, 0) <= 12) {
+      replyBranches.push({ mode: 'control', generate: options.generateReplies },
+        { mode: 'hold', generate: options.generateReplies });
+    }
+    const results = roots.map(root => replyBranches.map(branch =>
+      rollout(sampled, root, last, level, context, policy, deadline, branch)));
+    if (results.some(outcomes => outcomes.some(result => result === null))) break;
     // Only complete paired samples count: every candidate faces the same deal.
-    results.forEach((outcome, index) => {
+    results.forEach((outcomes, index) => {
       const total = totals[index];
       total.samples++;
       total.weight += sampleWeight;
-      total.winRate += Number(outcome!.win) * sampleWeight;
-      total.doubleWinRate += Number(outcome!.doubleWin) * sampleWeight;
-      total.meanReward += outcome!.reward * sampleWeight;
+      for (const outcome of outcomes) {
+        const weight = sampleWeight / outcomes.length;
+        total.winRate += Number(outcome!.win) * weight;
+        total.doubleWinRate += Number(outcome!.doubleWin) * weight;
+        total.meanReward += outcome!.reward * weight;
+      }
     });
     analysis.simulation.samples++;
     analysis.simulation.status = 'sampled';

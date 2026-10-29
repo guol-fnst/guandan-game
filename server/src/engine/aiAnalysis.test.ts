@@ -297,7 +297,7 @@ test('endgame uses balanced complete samples and labels exhausted/incomplete run
   const context = contextFor(hands);
   const plays = generateLegalPlays(hands[0], 2);
   const analysis = await analyzeDecision(hands[0], plays, plays, null, 2, context, findBestPlay,
-    { budgetMs: 2000, maxSamples: 4, random: () => 0.5 });
+    { budgetMs: 2000, maxSamples: 4, random: () => 0.5, generateReplies: generateLegalPlays });
   assert.equal(analysis.simulation.samples, 4);
   for (const play of plays) {
     const result = analysis.candidates[analysisKey(play)].simulation!;
@@ -424,4 +424,24 @@ test('unified decision lets paired team outcomes override reported-maximum prefe
   analysis.candidates[analysisKey(ace)].simulation!.samples = 2;
   assert.equal(finalizeAiDecision(ace, plays, hand, last, false, Rank.Two, context, analysis), joker,
     'insufficient evidence keeps reported-maximum protection');
+});
+
+
+test('endgame response branches expose an opponent finishing after a probe', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, count = 1) => deck.filter(c => c.rank === rank).slice(0, count);
+  const hands = [[...take(Rank.Three), ...take(Rank.King, 2)], take(Rank.Four), take(Rank.Five), take(Rank.Six)];
+  const context = contextFor(hands);
+  const probe = generateLegalPlays(hands[0], Rank.Two).find(p => p.rank === Rank.Three)!;
+  const passive = (hand: Card[], last: CardPattern | null, free: boolean, level: number) =>
+    free ? generateLegalPlays(hand, level).sort((a, b) => b.cards.length - a.cards.length)[0] : null;
+  const deadline = performance.now() + 1000;
+  const baseline = rollout(hands, probe, null, Rank.Two, context, passive, deadline)!;
+  const control = rollout(hands, probe, null, Rank.Two, context, passive, deadline,
+    { mode: 'control', generate: generateLegalPlays })!;
+  const hold = rollout(hands, probe, null, Rank.Two, context, passive, deadline,
+    { mode: 'hold', generate: generateLegalPlays })!;
+  assert.equal(baseline.win, true);
+  assert.equal(control.win, false, 'active reply finishes before the probing player can recapture');
+  assert.deepEqual(hold, baseline);
 });

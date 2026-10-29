@@ -932,7 +932,7 @@ export async function findSmartPlay(
   ));
   const analysis = await analyzeDecision(
     hand, allPlays, legalPlays, isFreePlay ? null : lastPattern,
-    currentLevel, context, findBestPlay,
+    currentLevel, context, findBestPlay, { generateReplies: generateLegalPlays },
   );
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
