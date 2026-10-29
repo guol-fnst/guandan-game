@@ -337,6 +337,12 @@ export function scorePlay(
       : pairRank === currentLevel ? 240 : pairRank === Rank.Ace ? 100 : pairRank === Rank.King ? 60 : 0;
   }
 
+  // A-2-3 / 2-3-4 pairs are low tricks even though level/A pairs are controls.
+  if (play.type === PatternType.ConsecutivePair && play.rank <= Rank.Four) {
+    score -= play.cards.reduce((cost, card) => cost + (card.rank === currentLevel ? 160
+      : card.rank === Rank.Ace ? 80 : 0), 0);
+  }
+
   if (!isBombPattern(play)) {
     const late = hand.length <= 10 || context?.players.some(p => p.finishRank === null && p.cardCount <= 5);
     score -= play.cards.filter(card => isWildCard(card, currentLevel)).length * (late ? 90 : 260);

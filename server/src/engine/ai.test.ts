@@ -813,3 +813,19 @@ test('full-house selection preserves joker attachments at equal trick strength',
   assert.equal(enforceTeamStrategy(expensive, [expensive], expensive.cards, null, true, Rank.Two), expensive,
     'directly finishing with a joker pair remains allowed');
 });
+
+
+test('low consecutive pairs do not get free use of level and ace controls', () => {
+  const hand = cards([[Suit.Spade, Rank.Ace], [Suit.Club, Rank.Ace],
+    [Suit.Spade, Rank.Two], [Suit.Club, Rank.Two], [Suit.Spade, Rank.Three], [Suit.Club, Rank.Three],
+    [Suit.Spade, Rank.Five], [Suit.Club, Rank.Five], [Suit.Diamond, Rank.Five],
+    [Suit.Spade, Rank.Jack], [Suit.Club, Rank.Jack]]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const low = plays.find(play => play.type === PatternType.ConsecutivePair && play.rank === Rank.Three)!;
+  const house = plays.find(play => play.type === PatternType.TriplePair && play.rank === Rank.Five
+    && play.cards.filter(c => c.rank === Rank.Jack).length === 2)!;
+  assert.ok(low && house);
+  assert.ok(scorePlay(house, hand, Rank.Two, true) > scorePlay(low, hand, Rank.Two, true));
+  assert.equal(enforceTeamStrategy(low, [low], low.cards, null, true, Rank.Two), low,
+    'finishing takes priority over conserving controls');
+});
