@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
 import {
-  compressCandidatesForModel, enforceTeamStrategy, findBestPlay, generateLegalPlays, limitModelCandidates,
+  compressCandidatesForModel, enforceTeamStrategy, findBestPlay, generateLegalPlays, limitModelCandidates, passPosition,
   isForcedAiDecision, opponentControlStreak, reliablyBetterSimulation, roundStake, scorePass, scorePlay,
   shouldUseLlmForDecision, remainingStructureScores,
 } from './ai';
@@ -748,4 +748,23 @@ test('following evaluates sequence damage against PASS even with unique-rank car
   assert.equal(findBestPlay(hand, last, false, Rank.Two, context), null,
     'full scoring preserves the straight and pair instead of leaving fragments');
   assert.equal(enforceTeamStrategy(null, legal, hand, last, false, Rank.Two, context), null);
+});
+
+
+test('passing distinguishes last interception, remaining partner response and catch-wind', () => {
+  const hand = cards([[Suit.Spade, Rank.Five], [Suit.Spade, Rank.Six]]);
+  const last = generateLegalPlays(cards([[Suit.Club, Rank.Four]]), Rank.Two)[0];
+  const base = fourPlayerContext({ lastPlayPlayerIndex: 3, passCount: 0 });
+  const lastChance = { ...base, passCount: 2 };
+  assert.deepEqual(passPosition(base).responders, [1, 2]);
+  assert.equal(passPosition(lastChance).closesTrick, true);
+  assert.ok(scorePass(hand, last, Rank.Two, lastChance) < scorePass(hand, last, Rank.Two, base));
+  const short = { ...base, players: base.players.map(p => p.seatIndex === 3 ? { ...p, cardCount: 3 } : p) };
+  assert.ok(scorePass(hand, last, Rank.Two, short) > -1000, 'reported count is pressure, not forced interception');
+  const wind = { ...base, lastPlayPlayerIndex: 2, passCount: 2,
+    players: base.players.map(p => p.seatIndex === 2 ? { ...p, cardCount: 0, finishRank: 1 } : p) };
+  assert.equal(passPosition(wind).nextLead, 0);
+  assert.equal(passPosition(wind).closesTrick, true);
+  const skipped = { ...base, players: base.players.map(p => p.seatIndex === 1 ? { ...p, cardCount: 0, finishRank: 1 } : p) };
+  assert.deepEqual(passPosition(skipped).responders, [2], 'finished seats must not hide a partner response');
 });

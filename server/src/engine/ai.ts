@@ -710,6 +710,30 @@ export function findBestPlay(
   return proposed;
 }
 
+/** The unchanged trick after our PASS: who can still respond, or who gets
+ * the next lead (including catch-wind after a finished leader). */
+export function passPosition(context: AiDecisionContext) {
+  const active = context.players.filter(player => player.finishRank === null);
+  const leader = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
+  const needed = active.length - (leader?.finishRank === null ? 1 : 0);
+  const remaining = Math.max(0, needed - (context.passCount || 0) - 1);
+  const responders: number[] = [];
+  for (let step = 1; step <= 4 && responders.length < remaining; step++) {
+    const seat = (context.selfSeatIndex + step) % 4;
+    if (seat !== context.selfSeatIndex && seat !== leader?.seatIndex
+      && active.some(player => player.seatIndex === seat)) responders.push(seat);
+  }
+  let nextLead = leader?.seatIndex;
+  if (leader && leader.finishRank !== null) {
+    const partner = (leader.seatIndex + 2) % 4;
+    for (let step = 0; step < 4; step++) {
+      const seat = (partner + step) % 4;
+      if (active.some(player => player.seatIndex === seat)) { nextLead = seat; break; }
+    }
+  }
+  return { closesTrick: remaining === 0, responders, nextLead };
+}
+
 export function scorePass(
   hand: Card[], last: CardPattern | null, level: number, context: AiDecisionContext,
 ): number {
@@ -718,13 +742,18 @@ export function scorePass(
   // Defensive fallback for incomplete/synthetic contexts: never pass on a
   // trick attributed to ourselves.
   if (lastPlayer?.relation === 'self') return -10_000;
-  if (lastPlayer?.cardCount !== undefined && lastPlayer.cardCount <= 3) return -10_000;
   if (!last) return Number.NEGATIVE_INFINITY;
-  const nextPlayer = context.players.find(player =>
-    player.seatIndex === (context.selfSeatIndex + 1) % 4 && player.finishRank === null);
+  const position = passPosition(context);
+  const nextPlayer = context.players.find(player => player.seatIndex === position.responders[0]);
+  const nextLeader = context.players.find(player => player.seatIndex === position.nextLead);
   let score = 250 + Math.min(150, effectiveRank(last.rank, level) * 6);
   if ((lastPlayer?.cardCount ?? 27) > 10) score += 70;
-  if ((lastPlayer?.cardCount ?? 27) <= 5) score -= 260 * roundStake(context);
+  if (lastPlayer?.finishRank === null && lastPlayer.cardCount <= 5) {
+    score -= (lastPlayer.cardCount <= 1 ? 420 : lastPlayer.cardCount <= 3 ? 220 : 140) * roundStake(context);
+  }
+  if (position.closesTrick && nextLeader?.relation === 'opponent') {
+    score -= (nextLeader.cardCount <= 3 ? 240 : 100) * roundStake(context);
+  } else if (position.closesTrick && nextLeader?.relation === 'partner') score += 180;
   const controlStreak = opponentControlStreak(context);
   if (lastPlayer?.relation === 'opponent' && controlStreak > 1) {
     score -= Math.min(3, controlStreak - 1) * 140 * roundStake(context);
