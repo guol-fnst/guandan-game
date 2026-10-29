@@ -1,7 +1,7 @@
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
 import { createDeck, effectiveRank } from './card';
 import { canBeat, isBombPattern } from './compare';
-import type { AiDecisionContext } from './llmAi';
+import type { AiDecisionContext, AiRecentAction } from './llmAi';
 
 export type ChoosePlay = (
   hand: Card[], last: CardPattern | null, free: boolean, level: number,
@@ -22,10 +22,103 @@ export interface SampleResult {
 }
 
 export interface DecisionAnalysis {
+  teamPlan?: TeamPlan;
   handTurns: TurnEstimate;
-  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult }>;
+  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
+}
+
+export interface EndgameRoute {
+  intent: 'probe_then_recapture' | 'control_then_finish';
+  recapture?: { type: PatternType; rank: Rank; length: number };
+  exit?: { type: PatternType; rank: Rank; length: number };
+  controlProven: boolean;
+  score: number;
+  caveat: string;
+}
+
+/** Up to three own plays on short hands; this is a route, not a game-tree
+ * solution. A possible high response is never labelled guaranteed control. */
+export function analyzeEndgameRoutes(
+  hand: Card[], allPlays: CardPattern[], level: number, context?: AiDecisionContext,
+): Record<string, EndgameRoute> {
+  if (hand.length > 8 || hand.length < 2) return {};
+  const bits = new Map(hand.map((card, i) => [card.id, 1 << i]));
+  const maskOf = (play: CardPattern) => play.cards.reduce((mask, card) => mask | bits.get(card.id)!, 0);
+  const byMask = new Map(allPlays.map(play => [maskOf(play), play]));
+  const full = (1 << hand.length) - 1;
+  const controls = allPlays.filter(play => [PatternType.Single, PatternType.Pair].includes(play.type)
+    && effectiveRank(play.rank, level) >= effectiveRank(Rank.Ace, level));
+  const proven = new Map(controls.map(play => [play, publicControlEvidence(play, hand, level, context)?.unbeatable === true]));
+  const shape = (play: CardPattern) => ({ type: play.type, rank: play.rank, length: play.length });
+  const routes: Record<string, EndgameRoute> = {};
+  for (const play of allPlays) {
+    const mask = maskOf(play);
+    const exit = byMask.get(full ^ mask);
+    if (exit && controls.includes(play) && proven.get(play)) {
+      routes[analysisKey(play)] = { intent: 'control_then_finish', exit: shape(exit),
+        controlProven: true, score: 700, caveat: '公开未见牌无法压制控制张，获牌权后余牌可一手走完' };
+    }
+    // Never probe in a shape that may let an opponent finish immediately.
+    if (context?.players.some(p => p.relation === 'opponent' && p.finishRank === null
+      && p.cardCount === play.length)) continue;
+    for (const control of controls) {
+      const controlMask = maskOf(control);
+      if ((mask & controlMask) || control.type !== play.type || !canBeat(control, play, level)) continue;
+      const tailMask = full ^ mask ^ controlMask;
+      const tail = byMask.get(tailMask);
+      if (tailMask !== 0 && !tail) continue;
+      const certain = proven.get(control) === true;
+      const route: EndgameRoute = { intent: 'probe_then_recapture', recapture: shape(control),
+        exit: tail ? shape(tail) : undefined, controlProven: certain,
+        score: certain ? 600 : 180,
+        caveat: certain ? '先试探；如被接，用保留的控制张回手，再走尾牌'
+          : '仅为试探路线；控制张仍可能被更大牌或炸弹压制' };
+      const key = analysisKey(play);
+      if (!routes[key] || route.score > routes[key].score) routes[key] = route;
+    }
+  }
+  return routes;
+}
+
+export interface TeamPlan {
+  goal: 'finish_self' | 'feed_partner' | 'block_opponent' | 'organize';
+  reason: string;
+  feedType?: PatternType.Single | PatternType.Pair;
+  threatSeat?: number;
+}
+
+/** Rebuilt from our cards and public context each turn; never assumes a
+ * reported two-card hand is a pair or a pass means no legal response. */
+export function buildTeamPlan(
+  hand: Card[], allPlays: CardPattern[], context?: AiDecisionContext,
+): TeamPlan {
+  if (hand.length > 0 && allPlays.some(play => play.cards.length === hand.length)) {
+    return { goal: 'finish_self', reason: '本手可直接走完' };
+  }
+  const partner = context?.players.find(p => p.relation === 'partner');
+  const opponents = context?.players.filter(p => p.relation === 'opponent' && p.finishRank === null) || [];
+  const threat = opponents.filter(p => p.cardCount <= 2).sort((a, b) => a.cardCount - b.cardCount)[0];
+  if (threat) return { goal: 'block_opponent', threatSeat: threat.seatIndex,
+    reason: '对手接近走完，优先防守并保留回手' };
+  if (partner?.finishRank === null && partner.cardCount <= 2) {
+    return { goal: 'feed_partner',
+      feedType: partner.cardCount === 1 ? PatternType.Single : PatternType.Pair,
+      reason: partner.cardCount === 1 ? '争取牌权后领小单送对家'
+        : '争取牌权后尝试领小对；对家两张不保证是对子' };
+  }
+  if (partner?.finishRank === 1) return { goal: 'finish_self', reason: '对家已头游，争取双上' };
+  // A cheap two-play partition check on short hands, reusing legal actions.
+  if (hand.length <= 10) {
+    const bits = new Map(hand.map((card, i) => [card.id, 1 << i]));
+    const masks = new Set(allPlays.map(play => play.cards.reduce((mask, card) => mask | bits.get(card.id)!, 0)));
+    const full = (1 << hand.length) - 1;
+    if ([...masks].some(mask => masks.has(full ^ mask))) {
+      return { goal: 'finish_self', reason: '手牌可分两手，争取连续牌权；不代表必胜' };
+    }
+  }
+  return { goal: 'organize', reason: '减少难走的牌组，保留控制牌和队友配合机会' };
 }
 
 export function analysisKey(play: CardPattern): string {
@@ -372,6 +465,13 @@ export function rollout(
   let winner = context.lastPlayPlayerIndex;
   let trick = last;
   let passes = context.passCount || 0;
+  const history = context.actionHistory ? [...context.actionHistory] : undefined;
+  const recent = [...context.recentActions];
+  const record = (action: AiRecentAction) => {
+    history?.push(action);
+    recent.push(action);
+    if (recent.length > 12) recent.shift();
+  };
   const nextActive = (from: number) => {
     for (let step = 1; step <= 4; step++) {
       const next = (from + step) % 4;
@@ -382,7 +482,7 @@ export function rollout(
   for (let step = 0; step < 160; step++) {
     if (performance.now() >= deadline) return null;
     const simContext: AiDecisionContext = {
-      ...context, actionHistory: undefined, publicTransfers: undefined, recentActions: [],
+      ...context, actionHistory: history ? [...history] : undefined, recentActions: [...recent],
       selfSeatIndex: seat, partnerSeatIndex: (seat + 2) % 4,
       lastPlayPlayerIndex: winner, passCount: passes,
       players: hands.map((cards, i) => ({
@@ -396,6 +496,7 @@ export function rollout(
       if (!canBeat(action, trick, level)) return null;
       const ids = new Set(action.cards.map(card => card.id));
       if (ids.size !== action.cards.length || action.cards.some(card => !hands[seat].some(item => item.id === card.id))) return null;
+      record({ seatIndex: seat, action: 'play', pattern: action });
       hands[seat] = hands[seat].filter(card => !ids.has(card.id));
       trick = action; winner = seat; passes = 0;
       if (!hands[seat].length) finishes.push(seat);
@@ -408,6 +509,7 @@ export function rollout(
       seat = nextActive(seat);
     } else {
       if (!trick) return null;
+      record({ seatIndex: seat, action: 'pass' });
       passes++;
       const needed = 4 - finishes.length - (finishes.includes(winner) ? 0 : 1);
       if (passes >= needed) {
@@ -432,11 +534,15 @@ export async function analyzeDecision(
   const deadline = start + budget;
   const estimator = createTurnEstimator(hand, allPlays, Math.min(deadline, start + 80));
   const analysis: DecisionAnalysis = {
+    teamPlan: buildTeamPlan(hand, allPlays, context),
     handTurns: estimator.whole(), candidates: {},
     simulation: { status: 'not_endgame', samples: 0, elapsedMs: 0 },
   };
-  for (const play of candidates.slice(0, 40)) {
-    analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play) };
+  const routes = analyzeEndgameRoutes(hand, allPlays, level, context);
+  for (const [index, play] of candidates.entries()) {
+    const endgameRoute = routes[analysisKey(play)];
+    if (index >= 40 && !endgameRoute) continue;
+    analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play), endgameRoute };
   }
   const finish = () => {
     analysis.simulation.elapsedMs = Math.round(performance.now() - start);
@@ -453,12 +559,22 @@ export async function analyzeDecision(
   const structurallyOrdered = [...candidates.slice(0, 40)].sort((a, b) =>
     analysis.candidates[analysisKey(a)].remainingTurns.turns
       - analysis.candidates[analysisKey(b)].remainingTurns.turns);
-  // Preserve the leading heuristic action, then diversify by type/rank.
-  for (const play of [candidates[0], ...structurallyOrdered]) {
+  // Keep distinct plans in the small rollout budget: probe, control, feed,
+  // and shed structure. Ranking alone can fill every slot with similar leads.
+  const routeLeads = [...candidates].filter(play => routes[analysisKey(play)])
+    .sort((a, b) => routes[analysisKey(b)].score - routes[analysisKey(a)].score).slice(0, 2);
+  const controls = [PatternType.Single, PatternType.Pair].map(type =>
+    candidates.filter(play => play.type === type).sort((a, b) =>
+      effectiveRank(b.rank, level) - effectiveRank(a.rank, level))[0]);
+  const feed = candidates.find(play => play.type === analysis.teamPlan?.feedType);
+  for (const play of [candidates[0], ...routeLeads, ...controls, feed, ...structurallyOrdered]) {
     if (!play) continue;
     const shape = `${play.type}:${play.rank}`;
     if (!shapes.has(shape)) { roots.push(play); shapes.add(shape); }
-    if (roots.length >= 6) break;
+    if (!analysis.candidates[analysisKey(play)]) {
+      analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play) };
+    }
+    if (roots.length >= 8) break;
   }
   if (last) roots.push(null);
   if (!roots.length) return finish();
@@ -467,7 +583,7 @@ export async function analyzeDecision(
   // hand. This cache never contains another player's real hand.
   const policyCache = new Map<string, CardPattern | null>();
   const policy: ChoosePlay = (cards, trick, free, currentLevel, state) => {
-    const key = `${cards.map(c => c.id).sort((a, b) => a - b)}|${trick?.type}:${trick?.rank}|${state.selfSeatIndex}:${state.lastPlayPlayerIndex}|${state.players.map(p => `${p.cardCount}:${p.finishRank}`)}`;
+    const key = `${cards.map(c => c.id).sort((a, b) => a - b)}|${trick?.type}:${trick?.rank}:${trick?.length}|${state.selfSeatIndex}:${state.lastPlayPlayerIndex}:${state.passCount}|${state.players.map(p => `${p.cardCount}:${p.finishRank}`)}|${JSON.stringify(state.actionHistory)}`;
     if (!policyCache.has(key)) policyCache.set(key, choose(cards, trick, free, currentLevel, state));
     return policyCache.get(key)!;
   };

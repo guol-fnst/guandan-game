@@ -9,6 +9,7 @@ import {
 import { declarePatterns, identifyPattern, validWildSubstitutions } from './patterns';
 import { canBeat } from './compare';
 import type { AiDecisionContext } from './llmAi';
+import { buildTeamPlan } from './aiAnalysis';
 
 function cards(specs: Array<[Suit, Rank]>): Card[] {
   return specs.map(([suit, rank], index) => ({ id: index + 1, suit, rank }));
@@ -265,6 +266,47 @@ function fourPlayerContext(overrides: Partial<AiDecisionContext>): AiDecisionCon
     ...overrides,
   };
 }
+
+test('team plan changes from organizing to feeding, blocking and finishing', () => {
+  const hand = cards([[Suit.Spade, Rank.Three], [Suit.Club, Rank.Four],
+    [Suit.Diamond, Rank.Eight], [Suit.Heart, Rank.Nine], [Suit.Spade, Rank.SmallJoker]]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const calm = fourPlayerContext({});
+  assert.equal(buildTeamPlan(hand, plays, calm).goal, 'organize');
+  const partnerShort = { ...calm, players: calm.players.map(p =>
+    p.relation === 'partner' ? { ...p, cardCount: 2 } : p) };
+  const feed = buildTeamPlan(hand, plays, partnerShort);
+  assert.equal(feed.goal, 'feed_partner');
+  assert.equal(feed.feedType, PatternType.Pair);
+  assert.match(feed.reason, /不保证/);
+  const danger = { ...partnerShort, players: partnerShort.players.map(p =>
+    p.seatIndex === 1 ? { ...p, cardCount: 1 } : p) };
+  assert.equal(buildTeamPlan(hand, plays, danger).goal, 'block_opponent');
+  assert.equal(buildTeamPlan(hand, plays, calm).goal, 'organize', 'plans do not persist after the threat changes');
+  const lastCard = hand.slice(0, 1);
+  assert.equal(buildTeamPlan(lastCard, generateLegalPlays(lastCard, Rank.Two), danger).goal, 'finish_self');
+});
+
+test('partner reported pair encourages control followed by a retained low pair', () => {
+  const hand = cards([[Suit.Spade, Rank.Three], [Suit.Club, Rank.Three],
+    [Suit.Spade, Rank.Ace], [Suit.Spade, Rank.SmallJoker], [Suit.Heart, Rank.BigJoker]]);
+  const last: CardPattern = { type: PatternType.Single, rank: Rank.King, length: 1,
+    cards: [{ id: 99, suit: Suit.Diamond, rank: Rank.King }] };
+  const base = fourPlayerContext({ lastPlayPlayerIndex: 3 });
+  const context = { ...base, players: base.players.map(p => ({ ...p,
+    cardCount: p.relation === 'partner' ? 2 : p.relation === 'self' ? hand.length : 18 })) };
+  const response = findBestPlay(hand, last, false, Rank.Two, context);
+  assert.equal(response?.type, PatternType.Single);
+  assert.equal(response?.rank, Rank.Ace);
+  const used = new Set(response!.cards.map(card => card.id));
+  const remaining = hand.filter(card => !used.has(card.id));
+  const lead = findBestPlay(remaining, null, true, Rank.Two,
+    { ...context, lastPlayPlayerIndex: -1 });
+  assert.equal(lead?.type, PatternType.Pair);
+  assert.equal(lead?.rank, Rank.Three);
+  assert.equal(findBestPlay(hand, last, false, Rank.Two,
+    { ...context, lastPlayPlayerIndex: 2 }), null, 'do not take control from partner');
+});
 
 test('roundStake follows the match score: trailing fights harder, a big lead conserves', () => {
   assert.equal(roundStake(undefined), 1);

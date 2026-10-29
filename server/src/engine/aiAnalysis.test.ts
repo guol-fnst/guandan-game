@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
 import { createDeck } from './card';
-import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy } from './ai';
+import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analysisKey, buildPublicKnowledge, createTurnEstimator,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
 } from './aiAnalysis';
 import { llmFindBestPlay } from './llmAi';
@@ -105,6 +105,65 @@ test('final policy chooses smaller equivalent pairs but does not break a bomb', 
   assert.equal(enforceTeamStrategy(intact, bombPlays, bombHand, null, true, 2)?.rank, Rank.King);
 });
 
+test('publicly unbeatable pair is retained on a calm lead, including model proposals', () => {
+  const deck = createDeck();
+  const pick = (rank: Rank, suit: Suit) => deck.find(c => c.rank === rank && c.suit === suit)!;
+  const hand = [pick(Rank.Three, Suit.Spade), pick(Rank.Three, Suit.Club),
+    pick(Rank.King, Suit.Spade), pick(Rank.King, Suit.Club), pick(Rank.Seven, Suit.Diamond)];
+  const unseen = [Rank.Four, Rank.Five, Rank.Six, Rank.Eight, Rank.Nine, Rank.Ten, Rank.Queen]
+    .flatMap(rank => [Suit.Heart, Suit.Club, Suit.Diamond].map(suit => pick(rank, suit)));
+  const context = contextFor([hand, unseen.slice(0, 7), unseen.slice(7, 14), unseen.slice(14)]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const kings = plays.find(play => play.type === PatternType.Pair && play.rank === Rank.King)!;
+  assert.equal(publicControlEvidence(kings, hand, Rank.Two, context)?.unbeatable, true);
+  assert.equal(findBestPlay(hand, null, true, Rank.Two, context)?.rank, Rank.Three);
+  assert.equal(enforceTeamStrategy(kings, plays, hand, null, true, Rank.Two, context)?.rank, Rank.Three);
+});
+
+test('short hand probes with a recapture and exit, but never feeds a reported single', () => {
+  const deck = createDeck();
+  const pick = (rank: Rank, suit: Suit) => deck.find(c => c.rank === rank && c.suit === suit)!;
+  const hand = [pick(Rank.Three, Suit.Spade), pick(Rank.BigJoker, Suit.Heart),
+    pick(Rank.Eight, Suit.Spade), pick(Rank.Eight, Suit.Club)];
+  const unseen = [Rank.Four, Rank.Five, Rank.Six, Rank.Nine, Rank.Ten, Rank.Queen, Rank.King]
+    .flatMap(rank => [Suit.Heart, Suit.Club, Suit.Diamond].map(suit => pick(rank, suit)));
+  const context = contextFor([hand, unseen.slice(0, 7), unseen.slice(7, 14), unseen.slice(14)]);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const probe = plays.find(p => p.type === PatternType.Single && p.rank === Rank.Three)!;
+  const big = plays.find(p => p.type === PatternType.Single && p.rank === Rank.BigJoker)!;
+  const route = analyzeEndgameRoutes(hand, plays, Rank.Two, context)[analysisKey(probe)];
+  assert.equal(route.intent, 'probe_then_recapture');
+  assert.equal(route.controlProven, true);
+  assert.equal(route.recapture?.rank, Rank.BigJoker);
+  assert.equal(route.exit?.type, PatternType.Pair);
+  assert.equal(findBestPlay(hand, null, true, Rank.Two, context)?.rank, Rank.Three);
+  assert.equal(enforceTeamStrategy(big, plays, hand, null, true, Rank.Two, context)?.rank, Rank.Three);
+
+  const danger = contextFor([hand, unseen.slice(0, 7), unseen.slice(7, 14), unseen.slice(14, 15)]);
+  assert.equal(analyzeEndgameRoutes(hand, plays, Rank.Two, danger)[analysisKey(probe)], undefined);
+  assert.equal(findBestPlay(hand, null, true, Rank.Two, danger)?.type, PatternType.Pair);
+
+  const noMemory = { ...context, actionHistory: undefined };
+  const uncertain = analyzeEndgameRoutes(hand, plays, Rank.Two, noMemory)[analysisKey(probe)];
+  assert.equal(uncertain.controlProven, false);
+  assert.match(uncertain.caveat, /可能/);
+});
+
+test('proven control followed by a whole-hand exit takes priority in the endgame', () => {
+  const deck = createDeck();
+  const hand = [deck.find(c => c.rank === Rank.BigJoker)!,
+    ...deck.filter(c => c.rank === Rank.Three).slice(0, 2)];
+  const unseen = deck.filter(c => [Rank.Five, Rank.Seven, Rank.Nine].includes(c.rank)
+    && [Suit.Spade, Suit.Club, Suit.Diamond].includes(c.suit)).slice(0, 9);
+  const context = contextFor([hand, unseen.slice(0, 3), unseen.slice(3, 6), unseen.slice(6)]);
+  const play = findBestPlay(hand, null, true, Rank.Two, context)!;
+  assert.equal(play.rank, Rank.BigJoker);
+  const plays = generateLegalPlays(hand, Rank.Two);
+  const route = analyzeEndgameRoutes(hand, plays, Rank.Two, context)[analysisKey(play)];
+  assert.equal(route.intent, 'control_then_finish');
+  assert.equal(route.exit?.type, PatternType.Pair);
+});
+
 test('four lucky simulations do not authorize overtaking partner; substantial paired evidence can', () => {
   const hand = rankedHand([14, 7]);
   const plays = generateLegalPlays(hand, 2);
@@ -113,7 +172,7 @@ test('four lucky simulations do not authorize overtaking partner; substantial pa
     cards: [{ id: 99, suit: Suit.Spade, rank: Rank.King }] };
   const context = contextFor([hand, [], [], []]);
   context.lastPlayPlayerIndex = 2;
-  context.players[1].cardCount = 2;
+  context.players.forEach(player => { if (player.relation === 'opponent') player.cardCount = 8; });
   const analysis: DecisionAnalysis = {
     handTurns: { turns: 2, exact: true },
     candidates: { [analysisKey(high)]: { remainingTurns: { turns: 1, exact: true },
@@ -125,6 +184,16 @@ test('four lucky simulations do not authorize overtaking partner; substantial pa
   analysis.candidates[analysisKey(high)].simulation!.samples = 8;
   analysis.passSimulation!.samples = 8;
   assert.equal(enforceTeamStrategy(high, plays, hand, last, false, 2, context, analysis), high);
+  assert.equal(finalizeAiDecision(null, plays, hand, last, false, 2, context, analysis), high,
+    'team evidence may replace model PASS even without a reported opponent');
+  analysis.candidates[analysisKey(high)].simulation!.meanReward = -0.5;
+  analysis.passSimulation!.meanReward = 0.5;
+  context.lastPlayPlayerIndex = 1;
+  assert.equal(finalizeAiDecision(high, plays, hand, last, false, 2, context, analysis), null,
+    'the same comparison may replace model play with PASS');
+  analysis.passSimulation!.samples = 4;
+  assert.equal(finalizeAiDecision(high, plays, hand, last, false, 2, context, analysis), high,
+    'unmatched samples cannot override the model');
 });
 
 test('public memory allows a necessary single interception but not overtaking an unbeatable partner', () => {
@@ -205,14 +274,21 @@ test('rollout applies catch-wind and stops when one team finishes first and seco
   context.passCount = 1;
   const last: CardPattern = { type: PatternType.Single, rank: Rank.BigJoker,
     cards: [deck[53]], length: 1 };
+  const originalHistory = JSON.stringify(context.actionHistory);
   const visits: Array<[number, boolean]> = [];
   const result = rollout(hands, null, last, 2, context, (hand, trick, free, level, state) => {
     visits.push([state.selfSeatIndex, free]);
+    assert.ok(buildPublicKnowledge(hand, state), 'memory remains consistent from each seat');
+    assert.deepEqual(state.actionHistory!.slice(0, context.actionHistory!.length), context.actionHistory);
+    assert.equal(state.actionHistory!.at(-1)?.action, 'pass');
+    assert.equal(state.actionHistory!.length, context.actionHistory!.length + visits.length);
+    assert.equal(state.recentActions.at(-1)?.action, 'pass');
     return findBestPlay(hand, trick, free, level, state);
   }, performance.now() + 1000);
   assert.deepEqual(visits, [[1, false], [0, true]]);
   assert.deepEqual(result, { reward: 1, win: true, doubleWin: true });
   assert.equal(hands[0].length, 1, 'simulation must not mutate the caller hand');
+  assert.equal(JSON.stringify(context.actionHistory), originalHistory, 'simulation must not mutate live history');
 });
 
 test('endgame uses balanced complete samples and labels exhausted/incomplete runs', async () => {
@@ -264,6 +340,7 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.equal(input.played_by_seat.length, 4);
     assert.ok(input.played_by_seat.every((player: any) => player.cards.length > 0));
     assert.deepEqual(input.local_analysis.hand_turns, { turns: 1, exact: true });
+    assert.equal(input.team_plan.goal, 'finish_self');
     assert.equal(input.legal_action_member_schema[10], 'analysis');
     assert.equal(input.legal_actions[0][1][0][10].remainingTurns.turns, 0);
     assert.equal(input.candidate_coverage.model_actions, plays.length);

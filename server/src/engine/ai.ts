@@ -6,8 +6,8 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay } from './llmAi';
 import type { AiDecisionContext } from './llmAi';
-import { analyzeDecision, analysisKey, buildPublicKnowledge, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
-import type { DecisionAnalysis, SampleResult } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
+import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
   const map = new Map<number, Card[]>();
@@ -285,6 +285,7 @@ export function scorePlay(
   isFreePlay: boolean,
   context?: AiDecisionContext,
   protectedCardIds: ReadonlySet<number> = new Set(),
+  teamPlan?: TeamPlan,
 ): number {
   if (play.cards.length === hand.length) return 1_000_000;
   const handCounts = getRankCounts(hand);
@@ -355,15 +356,13 @@ export function scorePlay(
   if (partnerLed) score -= 15_000;
 
   if (isFreePlay && context) {
-    const partner = context.players.find(player => player.relation === 'partner' && player.finishRank === null);
+    const plan = teamPlan ?? buildTeamPlan(hand, [], context);
     const opponents = context.players.filter(player => player.relation === 'opponent' && player.finishRank === null);
-    if (partner?.cardCount === play.cards.length) score += 900 * stake;
     if (opponents.some(player => player.cardCount === play.cards.length)) score -= 350;
 
     // Shape the lead for a reported partner, not merely for an exact whole-hand
     // match. Lower leads remain preferable through the generic rank cost.
-    if (partner?.cardCount === 1 && play.type === PatternType.Single) score += 520 * stake;
-    if (partner?.cardCount === 2 && play.type === PatternType.Pair) score += 520 * stake;
+    if (plan.goal === 'feed_partner' && play.type === plan.feedType) score += 520 * stake;
     const nextSeat = (context.selfSeatIndex + 1) % 4;
     for (const opponent of opponents) {
       const exposesReportedShape = opponent.cardCount === 1 && play.type === PatternType.Single
@@ -374,7 +373,9 @@ export function scorePlay(
 
   if (context && (play.type === PatternType.Single || play.type === PatternType.Pair)) {
     const evidence = publicControlEvidence(play, hand, currentLevel, context);
-    if (evidence?.unbeatable) score += isFreePlay ? 260 : 420;
+    // A known control is valuable to retain, not a reason to open high in a
+    // calm position. Spend it to contest a trick or meet an urgent threat.
+    if (evidence?.unbeatable) score += isFreePlay ? (urgentOpponent ? 260 : 0) : 420;
   }
 
   // Round-outcome shaping from finish ranks: partner already first means our
@@ -390,6 +391,50 @@ export function scorePlay(
 
   // Prefer the weakest physical realization when declarations are equivalent.
   score -= play.cards.reduce((sum, card) => sum + effectiveRank(card.rank, currentLevel), 0) / 20;
+  return score;
+}
+
+function scoreTeamPlan(
+  play: CardPattern, hand: Card[], allPlays: CardPattern[], level: number,
+  free: boolean, plan: TeamPlan, context?: AiDecisionContext,
+  memory: PublicKnowledge | null = null,
+): number {
+  if (!context || play.cards.length === hand.length) return 0;
+  const used = new Set(play.cards.map(card => card.id));
+  const remaining = hand.filter(card => !used.has(card.id));
+  let score = 0;
+  if (plan.goal === 'finish_self') {
+    score += play.cards.length * 20;
+  } else if (plan.goal === 'block_opponent') {
+    if (!free && context.lastPlayPlayerIndex === plan.threatSeat) score += 120;
+  } else if (plan.goal === 'feed_partner') {
+    const feed = allPlays.find(candidate => candidate.type === plan.feedType
+      && effectiveRank(candidate.rank, level) < Rank.Queen
+      && candidate.cards.every(card => !used.has(card.id)));
+    const opponentLed = context.players.some(p => p.seatIndex === context.lastPlayPlayerIndex
+      && p.relation === 'opponent');
+    // Taking control only helps the plan if a suitable low lead remains.
+    if (!free && opponentLed && feed && (isBombPattern(play)
+      || effectiveRank(play.rank, level) >= effectiveRank(Rank.Ace, level))) score += 180;
+    if (free && play.type === plan.feedType && memory) {
+      const partner = memory.knownBySeat[context.partnerSeatIndex];
+      if (partner.length === play.length && partner.every(card => card.rank === partner[0].rank)) {
+        score += effectiveRank(partner[0].rank, level) > effectiveRank(play.rank, level) ? 150 : -520;
+      }
+    }
+  }
+  // Public memory: retain an appropriate control against a reported opponent.
+  // No bomb guarantee is implied; a high unseen single may still beat it.
+  if (memory && [PatternType.Single, PatternType.Pair].includes(play.type)) {
+    const reported = context.players.some(p => p.relation === 'opponent'
+      && p.finishRank === null && p.cardCount === play.length);
+    if (reported) {
+      const retained = allPlays.some(candidate => candidate.type === play.type
+        && candidate.cards.every(card => !used.has(card.id))
+        && memory.unseen.every(card => effectiveRank(card.rank, level) <= effectiveRank(candidate.rank, level)));
+      if (retained && remaining.length > 0) score += 100;
+    }
+  }
   return score;
 }
 
@@ -525,6 +570,10 @@ function orderCandidates(
   allPlays?: CardPattern[],
   evaluatedScores?: Map<CardPattern, number>,
 ): CardPattern[] {
+  const wholeHandPlays = allPlays ?? generateLegalPlays(hand, currentLevel);
+  const teamPlan = analysis?.teamPlan ?? buildTeamPlan(hand, wholeHandPlays, context);
+  const endgameRoutes = isFreePlay ? analyzeEndgameRoutes(hand, wholeHandPlays, currentLevel, context) : {};
+  const memory = context ? buildPublicKnowledge(hand, context) : null;
   // Evaluate retained same-type controls for every candidate before truncating
   // the model input. A higher disjoint play is potential recapture, not proof
   // that it can beat an opponent's unknown response.
@@ -550,10 +599,10 @@ function orderCandidates(
     .filter(play => play.type === PatternType.FlushStraight || play.type === PatternType.KingBomb)
     .flatMap(play => play.cards.map(card => card.id)));
   const structure = remainingStructureScores(
-    hand, plays, allPlays ?? generateLegalPlays(hand, currentLevel), currentLevel, analysis,
+    hand, plays, wholeHandPlays, currentLevel, analysis,
   );
   const counts = getRankCounts(hand);
-  const sequenceIds = new Set((allPlays ?? generateLegalPlays(hand, currentLevel))
+  const sequenceIds = new Set(wholeHandPlays
     .filter(play => [PatternType.Straight, PatternType.FlushStraight,
       PatternType.ConsecutivePair, PatternType.Plane].includes(play.type))
     .flatMap(play => play.cards.map(card => card.id)));
@@ -567,8 +616,10 @@ function orderCandidates(
     const looseBonus = opponentLed && play.type === PatternType.Single
       && counts.get(card.rank)?.length === 1 && !isJoker(card)
       && !isWildCard(card, currentLevel) && !sequenceIds.has(card.id) ? 80 : 0;
-    scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds)
-      + recaptureBonus(play) + (structure.get(play) || 0) + looseBonus);
+    scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds, teamPlan)
+      + recaptureBonus(play) + (structure.get(play) || 0) + looseBonus
+      + (endgameRoutes[analysisKey(play)]?.score || 0)
+      + scoreTeamPlan(play, hand, wholeHandPlays, currentLevel, isFreePlay, teamPlan, context, memory));
   }
   return [...plays].sort((a, b) => scores.get(b)! - scores.get(a)!);
 }
@@ -729,8 +780,7 @@ function materiallyBetterSimulation(
     ? analysis?.candidates[analysisKey(alternative)]?.simulation : analysis?.passSimulation;
   // Small samples and marginal differences must not override team cooperation
   // or spending the weakest sufficient card. A sampled 100% is not proof.
-  return !!result && !!other && result.samples >= 8 && result.samples === other.samples
-    && result.meanReward - other.meanReward >= 0.25;
+  return reliablyBetterSimulation(result, other);
 }
 
 export function reliablyBetterSimulation(
@@ -775,10 +825,8 @@ export function enforceTeamStrategy(
   const partnerLed = !free && last && context
     && context.lastPlayPlayerIndex === context.partnerSeatIndex;
   if (partnerLed && last) {
-    const urgent = context?.players.some(p => p.relation === 'opponent'
-      && p.finishRank === null && p.cardCount <= 5);
     if (!blocksReportedSingle(proposed, last, hand, level, context)
-      && !(urgent && materiallyBetterSimulation(proposed, null, analysis))) return null;
+      && !materiallyBetterSimulation(proposed, null, analysis)) return null;
   }
   const alternatives = candidates.filter(play => play.cards.length === proposed.cards.length
     && (play.type === proposed.type || (isBombPattern(play) && isBombPattern(proposed)))
@@ -798,6 +846,38 @@ export function enforceTeamStrategy(
     return enforceNextPlayerReport(lower, candidates, level, context);
   }
   return proposed;
+}
+
+/** One final comparison for both model replies and fallback, including PASS.
+ * Only compare complete paired samples; an unmeasured action keeps its prior.
+ * Compare the actual guarded action, so a later preference cannot undo evidence. */
+export function finalizeAiDecision(
+  proposed: CardPattern | null, candidates: CardPattern[], hand: Card[],
+  last: CardPattern | null, free: boolean, level: number,
+  context?: AiDecisionContext, analysis?: DecisionAnalysis,
+): CardPattern | null {
+  const guard = (play: CardPattern | null) => enforceTeamStrategy(
+    play, candidates, hand, last, free, level, context, analysis,
+  );
+  let selected = guard(proposed);
+  if (selected?.cards.length === hand.length || !analysis) return selected;
+  const resultOf = (play: CardPattern | null) => play
+    ? analysis.candidates[analysisKey(play)]?.simulation : analysis.passSimulation;
+  // Pick the strongest measured alternative first to avoid order-dependent
+  // chains of small improvements. PASS participates on exactly the same scale.
+  const alternatives: Array<CardPattern | null> = [...candidates];
+  if (!free) alternatives.push(null);
+  alternatives.sort((a, b) => (resultOf(b)?.meanReward ?? -Infinity)
+    - (resultOf(a)?.meanReward ?? -Infinity));
+  for (const alternative of alternatives) {
+    if (!reliablyBetterSimulation(resultOf(alternative), resultOf(selected))) continue;
+    const guarded = guard(alternative);
+    if (reliablyBetterSimulation(resultOf(guarded), resultOf(selected))) {
+      selected = guarded;
+      break;
+    }
+  }
+  return selected;
 }
 
 export async function findSmartPlay(
@@ -854,25 +934,7 @@ export async function findSmartPlay(
   );
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
-  let fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
-  // Do not let one lucky hidden-hand sample override the baseline. Compare
-  // paired, completed simulations only, retaining baseline preference on ties.
-  if (analysis.simulation.samples >= 8) {
-    const simulated = legalPlays.filter(play => analysis.candidates[analysisKey(play)]?.simulation);
-    simulated.sort((a, b) => analysis.candidates[analysisKey(b)].simulation!.meanReward
-      - analysis.candidates[analysisKey(a)].simulation!.meanReward);
-    if (simulated.length) {
-      const best = analysis.candidates[analysisKey(simulated[0])].simulation!;
-      const baseline = ruleResult
-        ? analysis.candidates[analysisKey(ruleResult)]?.simulation
-        : analysis.passSimulation;
-      if (reliablyBetterSimulation(best, baseline)) fallbackResult = simulated[0];
-      const selected = fallbackResult
-        ? analysis.candidates[analysisKey(fallbackResult)]?.simulation
-        : analysis.passSimulation;
-      if (reliablyBetterSimulation(analysis.passSimulation, selected)) fallbackResult = null;
-    }
-  }
+  const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
 
   try {
     const llmResult = await llmFindBestPlay(
@@ -889,12 +951,12 @@ export async function findSmartPlay(
       handCombinations.equivalentCounts,
     );
     // undefined means the model was unavailable/invalid; null is an intentional pass.
-    if (llmResult !== undefined) return enforceTeamStrategy(
+    if (llmResult !== undefined) return finalizeAiDecision(
       llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis,
     );
   } catch {}
 
-  return enforceTeamStrategy(
+  return finalizeAiDecision(
     fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis,
   );
 }

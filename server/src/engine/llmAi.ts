@@ -1,14 +1,14 @@
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
-import { analysisKey, buildPublicKnowledge } from './aiAnalysis';
+import { analysisKey, buildPublicKnowledge, buildTeamPlan } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const LOCAL_BASE_URL = 'https://fueternal.com/api/v1';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
-  provider: 'local',
-  model: 'Qwen3.8-27',
+  provider: 'deepseek',
+  model: 'deepseek-v4-flash',
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
@@ -67,7 +67,8 @@ export function normalizeAiSelection(
   provider: unknown,
   model: unknown,
 ): AiModelSelection {
-  const normalizedProvider: AiProvider = provider === 'deepseek' ? 'deepseek' : DEFAULT_AI_SELECTION.provider;
+  const normalizedProvider: AiProvider = provider === 'local' || provider === 'deepseek'
+    ? provider : DEFAULT_AI_SELECTION.provider;
   const candidate = typeof model === 'string' && /^[\w./:-]{1,120}$/.test(model.trim())
     ? model.trim()
     : '';
@@ -247,7 +248,7 @@ export async function llmFindBestPlay(
 
 跟单控权：对手出级牌时，比较用散王接管与过牌的后续收益；若接管后可转出成组牌、送报单/报双队友或阻断对手连续走牌，应积极考虑最小够用的王。区分散王、王对和四王炸的保存成本，不因王珍贵就机械过牌。大王是最大单张，即使可能被炸，也有单张控权价值；小王仍可能被大王反压，接管不保证连续出牌。队友领出的级牌仍遵循合作原则。
 
-残局：任一玩家≤5张时规划未来1至3手。对手报单保留单张控制，报双保留对子控制；队友报单/双时创造对应牌型。下家只剩1张且决定出单时必须出最大合法单张；下家剩2张且决定出对子时必须出最大合法对子，但不强制该牌型或强制放弃PASS。
+残局：任一玩家≤5张时规划未来1至3手。参考endgameRoute的小牌试探→控制张回手→尾牌路线；controlProven=false时不能假定回手成功。控制张能保证获牌权且余牌一手走完时可先控后走。对手报单保留单张控制，报双保留对子控制；队友报单/双时创造对应牌型。下家只剩1张且决定出单时必须出最大合法单张；下家剩2张且决定出对子时必须出最大合法对子，但不强制该牌型或强制放弃PASS。
 
 程序分析限制：remainingTurns不含对手干扰；抽样模拟不是确定胜率，样本少或接近时优先结构与本地排序；incomplete_enumeration无有效胜率。不要展示冗长推理，只输出指定JSON。`;
 
@@ -277,6 +278,7 @@ export async function llmFindBestPlay(
       ? `第${context.roundNumber}局，队伍A ${context.teamLevels[0]}级，队伍B ${context.teamLevels[1]}级，队伍${context.leadingTeam === 0 ? 'A' : 'B'}在台`
       : '未提供',
     stage,
+    team_plan: analysis?.teamPlan ?? buildTeamPlan(hand, handCombinations, context),
     turn_mode: isFreePlay ? '自由出牌，必须选择动作' : '跟牌，可选择合法动作或PASS',
     hand: describeHand(hand, currentLevel),
     wildcards: hand

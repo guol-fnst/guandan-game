@@ -39,7 +39,7 @@ test('DeepSeek exposes queried non-Pro models and rejects Pro models', () => {
     provider: 'deepseek', model: 'deepseek-v4-flash',
   });
   assert.deepEqual(normalizeAiSelection(undefined, undefined), DEFAULT_AI_SELECTION);
-  assert.deepEqual(normalizeAiSelection('local', undefined), DEFAULT_AI_SELECTION);
+  assert.deepEqual(normalizeAiSelection('local', undefined), { provider: 'local', model: LOCAL_AI_MODEL });
 });
 
 test('Local only exposes and accepts Qwen3.8-27', () => {
@@ -83,7 +83,8 @@ test('default Qwen request uses Fueternal credentials and disables thinking', as
     return new Response(JSON.stringify({ choices: [{ message: { content: '{"action_id":0}' } }] }));
   }) as typeof fetch;
   try {
-    assert.equal(await llmFindBestPlay(hand, plays, null, true, Rank.Two), plays[0]);
+    assert.equal(await llmFindBestPlay(hand, plays, null, true, Rank.Two, undefined,
+      { provider: 'local', model: LOCAL_AI_MODEL }), plays[0]);
   } finally {
     globalThis.fetch = previousFetch;
     names.forEach((name, index) => {
