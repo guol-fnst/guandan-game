@@ -23,6 +23,7 @@ export interface SampleResult {
 
 export interface DecisionAnalysis {
   teamPlan?: TeamPlan;
+  teamRoutes?: TeamRoute[];
   handTurns: TurnEstimate;
   candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute }>;
   passSimulation?: SampleResult;
@@ -119,6 +120,72 @@ export function buildTeamPlan(
     }
   }
   return { goal: 'organize', reason: '减少难走的牌组，保留控制牌和队友配合机会' };
+}
+
+export interface TeamRoute {
+  goal: 'finish_self' | 'feed_partner' | 'takeover_change' | 'hold_control';
+  actionKey: string | null;
+  nextLead?: { type: PatternType; rank: Rank; length: number };
+  interceptSeats: number[];
+  reason: string;
+  simulation?: SampleResult;
+}
+
+/** Compare concrete alternatives rather than assigning the whole turn a single
+ * goal from card counts. No partner private cards are consulted. */
+export function buildTeamRoutes(
+  hand: Card[], allPlays: CardPattern[], candidates: CardPattern[], last: CardPattern | null,
+  level: number, context: AiDecisionContext | undefined,
+  estimates: DecisionAnalysis['candidates'], generate?: GenerateReplies,
+): TeamRoute[] {
+  if (!context) return [];
+  const routes: TeamRoute[] = [];
+  const self = [...candidates].sort((a, b) =>
+    (estimates[analysisKey(a)]?.remainingTurns.turns ?? hand.length - a.cards.length)
+    - (estimates[analysisKey(b)]?.remainingTurns.turns ?? hand.length - b.cards.length))[0];
+  if (self) routes.push({ goal: 'finish_self', actionKey: analysisKey(self), interceptSeats: [],
+    reason: '比较自己先走的余牌手数和本方最终名次，不能只看本手出牌数量' });
+  const partner = context.players.find(p => p.relation === 'partner' && p.finishRank === null);
+  if (partner && partner.cardCount <= 5) {
+    const memory = buildPublicKnowledge(hand, context);
+    const known = memory?.knownBySeat[partner.seatIndex] || [];
+    const knownPlays = generate && known.length === partner.cardCount ? generate(known, level) : undefined;
+    // Two remaining cards may be separate singles. Consider both leads unless
+    // publicly known cards rule one out; wider shapes require matching count.
+    const feeds = (last ? allPlays : candidates).filter(play => !isBombPattern(play)
+      && (play.cards.length === partner.cardCount || play.type === PatternType.Single)
+      && (!knownPlays || knownPlays.some(response => canBeat(response, play, level))))
+      .sort((a, b) => effectiveRank(a.rank, level) - effectiveRank(b.rank, level));
+    const shapes = new Set<PatternType>();
+    for (const feed of feeds) {
+      if (shapes.has(feed.type)) continue;
+      shapes.add(feed.type);
+      const interceptSeats = context.players.filter(p => p.relation === 'opponent'
+        && p.finishRank === null && p.cardCount === feed.cards.length
+        && (p.seatIndex - context.selfSeatIndex + 4) % 4
+          < (partner.seatIndex - context.selfSeatIndex + 4) % 4).map(p => p.seatIndex);
+      const reason = knownPlays ? '公开贡牌证实队友可接；仍须考虑中间对手拦截'
+        : '队友可能接上，牌数不能证明牌型；同时比较其他送牌方式';
+      if (!last) {
+        const lead = candidates.find(play => analysisKey(play) === analysisKey(feed));
+        if (lead) routes.push({ goal: 'feed_partner', actionKey: analysisKey(lead), interceptSeats, reason });
+      } else {
+        const feedIds = new Set(feed.cards.map(card => card.id));
+        const takeover = candidates.filter(play => !play.cards.some(card => feedIds.has(card.id)))
+          .sort((a, b) => isBombPattern(a) !== isBombPattern(b) ? Number(isBombPattern(a)) - Number(isBombPattern(b))
+            : effectiveRank(a.rank, level) - effectiveRank(b.rank, level))[0];
+        if (takeover) routes.push({ goal: 'takeover_change', actionKey: analysisKey(takeover), interceptSeats,
+          nextLead: { type: feed.type, rank: feed.rank, length: feed.length },
+          reason: `接管后保留送牌；必须先获得牌权，不能假定对手不再压制。${reason}` });
+      }
+      if (shapes.size >= 2) break;
+    }
+  }
+  if (last) routes.push({ goal: 'hold_control', actionKey: null, interceptSeats: [],
+    reason: context.lastPlayPlayerIndex === context.partnerSeatIndex
+      ? '让队友继续走，自己保留控制牌；比较是否会被对手截走'
+      : '暂让牌权、保留控制牌和结构；比较对手连续出牌的代价' });
+  return routes;
 }
 
 export function analysisKey(play: CardPattern): string {
@@ -564,7 +631,11 @@ export async function analyzeDecision(
     if (index >= 40 && !endgameRoute) continue;
     analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play), endgameRoute };
   }
+  analysis.teamRoutes = buildTeamRoutes(hand, allPlays, candidates, last, level, context,
+    analysis.candidates, options.generateReplies);
   const finish = () => {
+    for (const route of analysis.teamRoutes || []) route.simulation = route.actionKey
+      ? analysis.candidates[route.actionKey]?.simulation : analysis.passSimulation;
     analysis.simulation.elapsedMs = Math.round(performance.now() - start);
     return analysis;
   };
@@ -587,7 +658,9 @@ export async function analyzeDecision(
     candidates.filter(play => play.type === type).sort((a, b) =>
       effectiveRank(b.rank, level) - effectiveRank(a.rank, level))[0]);
   const feed = candidates.find(play => play.type === analysis.teamPlan?.feedType);
-  for (const play of [candidates[0], ...routeLeads, ...controls, feed, ...structurallyOrdered]) {
+  const teamActions = (analysis.teamRoutes || []).map(route =>
+    candidates.find(play => analysisKey(play) === route.actionKey));
+  for (const play of [candidates[0], ...teamActions, ...routeLeads, ...controls, feed, ...structurallyOrdered]) {
     if (!play) continue;
     const shape = `${play.type}:${play.rank}`;
     if (!shapes.has(shape)) { roots.push(play); shapes.add(shape); }

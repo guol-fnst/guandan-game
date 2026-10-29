@@ -5,7 +5,7 @@ import { createDeck } from './card';
 import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, createTurnEstimator,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
 } from './aiAnalysis';
 import { llmFindBestPlay } from './llmAi';
@@ -444,4 +444,32 @@ test('endgame response branches expose an opponent finishing after a probe', () 
   assert.equal(baseline.win, true);
   assert.equal(control.win, false, 'active reply finishes before the probing player can recapture');
   assert.deepEqual(hold, baseline);
+});
+
+
+test('team routes compare feeding mixed singles, seat interception, takeover and holding', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hands = [[...take(Rank.Three, 2), ...take(Rank.Ace)], take(Rank.Four),
+    [...take(Rank.Five), ...take(Rank.Seven)], take(Rank.Six)];
+  const context = contextFor(hands);
+  context.publicTransfers = hands[2].map(card => ({ fromSeat: 1, toSeat: 2, card }));
+  const plays = generateLegalPlays(hands[0], Rank.Two);
+  const leadRoutes = buildTeamRoutes(hands[0], plays, plays, null, Rank.Two, context, {}, generateLegalPlays);
+  const feeds = leadRoutes.filter(route => route.goal === 'feed_partner');
+  assert.equal(feeds.length, 1, 'known mixed singles must not be treated as a pair');
+  assert.equal(plays.find(play => analysisKey(play) === feeds[0].actionKey)?.type, PatternType.Single);
+  assert.deepEqual(feeds[0].interceptSeats, [1], 'the opponent before the partner can finish first');
+  assert.ok(leadRoutes.some(route => route.goal === 'finish_self'));
+  const last = generateLegalPlays(take(Rank.King), Rank.Two)[0];
+  const replies = plays.filter(play => play.type === PatternType.Single && play.rank === Rank.Ace);
+  const followRoutes = buildTeamRoutes(hands[0], plays, replies, last, Rank.Two, context, {}, generateLegalPlays);
+  assert.ok(followRoutes.some(route => route.goal === 'hold_control' && route.actionKey === null));
+  const takeover = followRoutes.find(route => route.goal === 'takeover_change')!;
+  assert.equal(takeover.actionKey, analysisKey(replies[0]));
+  assert.equal(takeover.nextLead?.rank, Rank.Three, 'taking control retains a real disjoint feed');
+  const unknown = buildTeamRoutes(hands[0], plays, plays, null, Rank.Two,
+    { ...context, publicTransfers: [] }, {}, generateLegalPlays);
+  assert.equal(unknown.filter(route => route.goal === 'feed_partner').length, 2,
+    'unknown two-card partner gets single and pair alternatives');
 });
