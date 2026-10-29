@@ -925,6 +925,26 @@ export function enforceTeamStrategy(
       && !materiallyBetterSimulation(proposed, null, analysis)
       && !productivePartnerTakeover(proposed, hand, generateLegalPlays(hand, level), last, level, context)) return null;
   }
+  // Compare the actual residual hand across shapes, not just bomb size.
+  // A public-card lock preserves the interception, including after a player
+  // finishes; rank completion alone must not disable resource conservation.
+  if (!free && last && isBombPattern(proposed) && analysis) {
+    const bombTurns = analysis.candidates[analysisKey(proposed)]?.remainingTurns;
+    const controls = candidates.filter(play => {
+      const after = analysis.candidates[analysisKey(play)]?.remainingTurns;
+      return !isBombPattern(play) && canBeat(play, last, level)
+        && bombTurns?.exact && after?.exact && after.turns < bombTurns.turns
+        && publicControlEvidence(play, hand, level, context)?.unbeatable === true
+        && !materiallyBetterSimulation(proposed, play, analysis);
+    });
+    if (controls.length) {
+      const control = orderCandidates(controls, hand, level, false, context, analysis)[0];
+      // Re-apply partner/report protections to the actual replacement.
+      const guarded = enforceTeamStrategy(control, candidates, hand, last, free, level, context, analysis);
+      if (guarded && !isBombPattern(guarded)
+        && publicControlEvidence(guarded, hand, level, context)?.unbeatable === true) return guarded;
+    }
+  }
   const alternatives = candidates.filter(play => play.cards.length === proposed.cards.length
     && (play.type === proposed.type || (isBombPattern(play) && isBombPattern(proposed)))
     && (canBeat(proposed, play, level)
@@ -938,7 +958,9 @@ export function enforceTeamStrategy(
     const proposedTurns = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (lowerTurns && proposedTurns && lowerTurns.turns > proposedTurns.turns) continue;
     if (materiallyBetterSimulation(proposed, lower, analysis)
-      || blocksReportedSingle(proposed, lower, hand, level, context)) continue;
+      || blocksReportedSingle(proposed, lower, hand, level, context)
+      || (!free && publicControlEvidence(proposed, hand, level, context)?.unbeatable === true
+        && publicControlEvidence(lower, hand, level, context)?.unbeatable !== true)) continue;
     // Do not weaken an interception of the partner's trick back into a pass.
     if (partnerLed && last && !blocksReportedSingle(lower, last, hand, level, context)
       && !materiallyBetterSimulation(lower, null, analysis)

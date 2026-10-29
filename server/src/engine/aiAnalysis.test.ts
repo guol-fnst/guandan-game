@@ -626,3 +626,34 @@ test('urgent interception may split a rank group with bounded whole-hand cost', 
   context.players[2].cardCount = 1;
   assert.equal(finalizeAiDecision(null, [single], hand, last, false, 11, context, analysis, null), null);
 });
+
+test('late wild bomb yields to a proven ordinary lock that preserves the exit', async () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...deck.filter(c => c.rank === 11 && [Suit.Spade, Suit.Heart].includes(c.suit)),
+    ...take(12, 2), ...take(13, 2), ...take(3)];
+  const context = contextFor([hand, [...take(14), ...take(8)], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.players[2].finishRank = 1;
+  context.players[3].finishRank = 2;
+  const last = generateLegalPlays(take(7), 11)[0];
+  const all = generateLegalPlays(hand, 11);
+  const bomb = all.find(p => p.type === PatternType.Bomb4 && p.rank === 11)!;
+  const single = all.find(p => p.type === PatternType.Single && p.rank === 11 && p.cards[0].suit === Suit.Spade)!;
+  const queen = all.find(p => p.type === PatternType.Single && p.rank === 12)!;
+  const analysis = await analyzeDecision(hand, all, [bomb, single, queen], last, 11, undefined, findBestPlay, { budgetMs: 200 });
+  assert.equal(publicControlEvidence(single, hand, 11, context)?.unbeatable, true);
+  assert.ok(analysis.candidates[analysisKey(single)].remainingTurns.turns
+    < analysis.candidates[analysisKey(bomb)].remainingTurns.turns);
+  assert.equal(enforceTeamStrategy(bomb, [bomb, single, queen], hand, last, false, 11, context, analysis), single);
+  assert.equal(enforceTeamStrategy(bomb, [bomb, single, queen], hand, last, false, 11,
+    { ...context, actionHistory: undefined }, analysis), bomb, 'no lock without public evidence');
+  const result = (meanReward: number) => ({ meanReward, samples: 16, winRate: 0.5, doubleWinRate: 0 });
+  analysis.candidates[analysisKey(bomb)].simulation = result(0.8);
+  analysis.candidates[analysisKey(single)].simulation = result(0);
+  assert.equal(enforceTeamStrategy(bomb, [bomb, single, queen], hand, last, false, 11, context, analysis), bomb,
+    'material paired team outcome still wins over the structure preference');
+  context.lastPlayPlayerIndex = 2;
+  assert.equal(enforceTeamStrategy(bomb, [bomb, single, queen], hand, last, false, 11, context, undefined), null,
+    'the new substitution does not authorize stealing a teammate trick');
+});
