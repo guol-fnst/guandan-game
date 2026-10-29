@@ -129,7 +129,7 @@ export default function Lobby() {
     loadAiModels(aiProvider);
   };
 
-  const [maxRounds, setMaxRounds] = useState('2');
+  const [maxRounds, setMaxRounds] = useState('0');
   const [maxMinutes, setMaxMinutes] = useState('0');
   const [tripleDoublePenalty, setTripleDoublePenalty] = useState(false);
   const [aiUseLLM, setAiUseLLM] = useState(true);
@@ -221,7 +221,7 @@ export default function Lobby() {
                   onChange={(e) => setRoomPass(e.target.value)}
                   style={styles.input}
                 />
-                <label style={styles.fieldLabel}>比赛最多副数（0不限）<input type="number" min="0" max="10000" value={maxRounds} onChange={e => setMaxRounds(e.target.value)} /></label>
+                <label style={styles.fieldLabel}>比赛最多副数（0：不限，打到 A 级通关）<input type="number" min="0" max="10000" value={maxRounds} onChange={e => setMaxRounds(e.target.value)} /></label>
                 <label style={styles.fieldLabel}>比赛分钟数（0不限，打完当前副结算）<input type="number" min="0" max="10000" value={maxMinutes} onChange={e => setMaxMinutes(e.target.value)} /></label>
                 <label style={styles.fieldLabel}><span><input type="checkbox" checked={tripleDoublePenalty} onChange={e => setTripleDoublePenalty(e.target.checked)} />连续三副双上退2级（地方玩法）</span></label>
                 <label style={styles.fieldLabel}>
