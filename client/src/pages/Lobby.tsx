@@ -129,7 +129,7 @@ export default function Lobby() {
     loadAiModels(aiProvider);
   };
 
-  const [maxRounds, setMaxRounds] = useState('0');
+  const [maxRounds, setMaxRounds] = useState('2');
   const [maxMinutes, setMaxMinutes] = useState('0');
   const [tripleDoublePenalty, setTripleDoublePenalty] = useState(false);
   const [aiUseLLM, setAiUseLLM] = useState(true);
