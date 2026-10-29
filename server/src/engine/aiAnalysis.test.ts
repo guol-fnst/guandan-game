@@ -399,3 +399,29 @@ test('room AI context derives counts from public history and clears memory next 
     if (room.turnTimer) clearTimeout(room.turnTimer);
   }
 });
+
+
+test('unified decision lets paired team outcomes override reported-maximum preference', () => {
+  const hand = rankedHand([Rank.Ace, Rank.BigJoker, Rank.Seven]);
+  const plays = generateLegalPlays(hand, Rank.Two).filter(p => p.type === PatternType.Single
+    && [Rank.Ace, Rank.BigJoker].includes(p.rank));
+  const ace = plays.find(p => p.rank === Rank.Ace)!;
+  const joker = plays.find(p => p.rank === Rank.BigJoker)!;
+  const last: CardPattern = { type: PatternType.Single, rank: Rank.King, length: 1,
+    cards: [{ id: 99, rank: Rank.King, suit: Suit.Spade }] };
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 3;
+  context.players[1].cardCount = 1;
+  const sample = (meanReward: number) => ({ samples: 16, meanReward, winRate: 0.5, doubleWinRate: 0 });
+  const analysis: DecisionAnalysis = {
+    handTurns: { turns: 3, exact: true },
+    candidates: {
+      [analysisKey(ace)]: { remainingTurns: { turns: 2, exact: true }, simulation: sample(0.8) },
+      [analysisKey(joker)]: { remainingTurns: { turns: 2, exact: true }, simulation: sample(-0.4) },
+    }, passSimulation: sample(-0.8), simulation: { samples: 16, elapsedMs: 0, status: 'sampled' },
+  };
+  assert.equal(finalizeAiDecision(joker, plays, hand, last, false, Rank.Two, context, analysis), ace);
+  analysis.candidates[analysisKey(ace)].simulation!.samples = 2;
+  assert.equal(finalizeAiDecision(ace, plays, hand, last, false, Rank.Two, context, analysis), joker,
+    'insufficient evidence keeps reported-maximum protection');
+});

@@ -821,7 +821,9 @@ export function enforceTeamStrategy(
   }
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
   if (!reportAdjusted) return null;
-  proposed = reportAdjusted;
+  // Reported-count interception is a strong prior, not a legality rule.
+  // A paired team-outcome comparison can justify retaining a smaller control.
+  if (!materiallyBetterSimulation(proposed, reportAdjusted, analysis)) proposed = reportAdjusted;
   const partnerLed = !free && last && context
     && context.lastPlayPlayerIndex === context.partnerSeatIndex;
   if (partnerLed && last) {
@@ -843,7 +845,8 @@ export function enforceTeamStrategy(
     // Do not weaken an interception of the partner's trick back into a pass.
     if (partnerLed && last && !blocksReportedSingle(lower, last, hand, level, context)
       && !materiallyBetterSimulation(lower, null, analysis)) continue;
-    return enforceNextPlayerReport(lower, candidates, level, context);
+    const adjusted = enforceNextPlayerReport(lower, candidates, level, context);
+    return materiallyBetterSimulation(lower, adjusted, analysis) ? lower : adjusted;
   }
   return proposed;
 }
@@ -863,19 +866,18 @@ export function finalizeAiDecision(
   if (selected?.cards.length === hand.length || !analysis) return selected;
   const resultOf = (play: CardPattern | null) => play
     ? analysis.candidates[analysisKey(play)]?.simulation : analysis.passSimulation;
-  // Pick the strongest measured alternative first to avoid order-dependent
-  // chains of small improvements. PASS participates on exactly the same scale.
+  // Compare the outcomes of actual guarded actions, not their pre-guard scores.
+  // Keep the original baseline fixed: several marginal gains cannot chain into
+  // an override, and a corrected action cannot hide a better later alternative.
+  const baseline = resultOf(selected);
   const alternatives: Array<CardPattern | null> = [...candidates];
   if (!free) alternatives.push(null);
-  alternatives.sort((a, b) => (resultOf(b)?.meanReward ?? -Infinity)
-    - (resultOf(a)?.meanReward ?? -Infinity));
   for (const alternative of alternatives) {
-    if (!reliablyBetterSimulation(resultOf(alternative), resultOf(selected))) continue;
+    if (!reliablyBetterSimulation(resultOf(alternative), baseline)) continue;
     const guarded = guard(alternative);
-    if (reliablyBetterSimulation(resultOf(guarded), resultOf(selected))) {
-      selected = guarded;
-      break;
-    }
+    const result = resultOf(guarded);
+    if (reliablyBetterSimulation(result, baseline)
+      && (!resultOf(selected) || result!.meanReward > resultOf(selected)!.meanReward)) selected = guarded;
   }
   return selected;
 }
