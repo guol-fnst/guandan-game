@@ -973,11 +973,19 @@ export function finalizeAiDecision(
     if (repeated || urgent || (partnerHead && leader.cardCount <= 5)) {
       const allPlays = generateLegalPlays(hand, level);
       const counts = getRankCounts(hand);
-      const ordinary = candidates.filter(play => !isBombPattern(play)
-        && play.cards.every(card => !isWildCard(card, level)
-          && (counts.get(card.rank)?.length || 0) === play.cards.filter(c => c.rank === card.rank).length)
-        && allPlays.some(group => group.cards.length >= 3
-          && group.cards.every(card => !play.cards.some(used => used.id === card.id))));
+      const ordinary = candidates.filter(play => {
+        const continuation = analysis?.candidates[analysisKey(play)]?.continuation;
+        // Rank groups are not the whole-hand plan: splitting a pair can leave
+        // a straight/full house intact. Allow a measured, bounded cost under
+        // immediate pressure, while retaining the normal conservation filter.
+        const boundedSplit = urgent && continuation?.exact && continuation.extraTurns <= 2;
+        return !isBombPattern(play)
+          && play.cards.every(card => !isWildCard(card, level)
+            && (boundedSplit || (counts.get(card.rank)?.length || 0)
+              === play.cards.filter(c => c.rank === card.rank).length))
+          && allPlays.some(group => group.cards.length >= 3
+            && group.cards.every(card => !play.cards.some(used => used.id === card.id)));
+      });
       const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context, allPlays) : ruleFallback;
       let response = ordinary.length ? orderCandidates(ordinary, hand, level, false, context, analysis, allPlays)[0] : null;
       if (!response && (urgent || partnerHead)) response = fallback;

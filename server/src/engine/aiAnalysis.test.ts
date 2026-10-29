@@ -605,3 +605,24 @@ test('model tempo remembers repeated passes beyond recent history and uses table
   context.players[1].cardCount = 1;
   assert.equal(decisionTempo(context).stage, '残局');
 });
+
+test('urgent interception may split a rank group with bounded whole-hand cost', async () => {
+  const hand = rankedHand([11, 11, 3, 3, 3, 5]);
+  hand.filter(c => c.rank === 11).forEach(c => { c.suit = Suit.Spade; });
+  const all = generateLegalPlays(hand, 11);
+  const single = all.find(p => p.type === PatternType.Single && p.rank === 11)!;
+  const last = generateLegalPlays(rankedHand([10]), 11)[0];
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 8; });
+  context.players[1].cardCount = 2;
+  context.actionHistory = [];
+  const analysis = await analyzeDecision(hand, all, [single], last, 11, undefined, findBestPlay, { budgetMs: 200 });
+  assert.ok(analysis.candidates[analysisKey(single)].continuation!.extraTurns <= 2);
+  assert.equal(finalizeAiDecision(null, [single], hand, last, false, 11, context, analysis, null), single);
+  context.players[1].cardCount = 8;
+  assert.equal(finalizeAiDecision(null, [single], hand, last, false, 11, context, analysis, null), null);
+  context.lastPlayPlayerIndex = 2;
+  context.players[2].cardCount = 1;
+  assert.equal(finalizeAiDecision(null, [single], hand, last, false, 11, context, analysis, null), null);
+});
