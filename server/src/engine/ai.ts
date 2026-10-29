@@ -961,16 +961,31 @@ export function finalizeAiDecision(
     play, candidates, hand, last, free, level, context, analysis,
   );
   let selected = guard(proposed);
-  // Large hands have no paired endgame rollout. Once our partner is first,
-  // repeated model PASS must not ignore a concrete local interception while
-  // the opponent runs down their hand. Keep measured comparisons authoritative.
+  // A model PASS without rollout evidence still needs to respect public tempo.
+  // Prefer an intact ordinary response with a real group left to lead; spend
+  // bombs only through the local defence policy or a last reported-single stop.
   const leader = context?.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
-  if (!selected && !free && context && !analysis?.passSimulation
-    && context.players.some(player => player.relation === 'partner' && player.finishRank === 1)
-    && leader?.relation === 'opponent' && leader.finishRank === null
-    && (leader.cardCount <= 5 || opponentControlStreak(context) >= 2)) {
-    const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context) : ruleFallback;
-    if (fallback && candidates.some(play => analysisKey(play) === analysisKey(fallback))) selected = guard(fallback);
+  if (!selected && !free && context && last && !analysis?.passSimulation
+    && leader?.relation === 'opponent' && leader.finishRank === null) {
+    const repeated = opponentControlStreak(context) >= 2;
+    const urgent = leader.cardCount <= 2;
+    const partnerHead = context.players.some(player => player.relation === 'partner' && player.finishRank === 1);
+    if (repeated || urgent || (partnerHead && leader.cardCount <= 5)) {
+      const allPlays = generateLegalPlays(hand, level);
+      const counts = getRankCounts(hand);
+      const ordinary = candidates.filter(play => !isBombPattern(play)
+        && play.cards.every(card => !isWildCard(card, level)
+          && (counts.get(card.rank)?.length || 0) === play.cards.filter(c => c.rank === card.rank).length)
+        && allPlays.some(group => group.cards.length >= 3
+          && group.cards.every(card => !play.cards.some(used => used.id === card.id))));
+      const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context, allPlays) : ruleFallback;
+      let response = ordinary.length ? orderCandidates(ordinary, hand, level, false, context, analysis, allPlays)[0] : null;
+      if (!response && (urgent || partnerHead)) response = fallback;
+      if (!response && leader.cardCount === 1 && passPosition(context).closesTrick) {
+        response = [...candidates].sort((a, b) => canBeat(a, b, level) ? 1 : canBeat(b, a, level) ? -1 : 0)[0] || null;
+      }
+      if (response && candidates.some(play => analysisKey(play) === analysisKey(response))) selected = guard(response);
+    }
   }
   if (selected?.cards.length === hand.length || !analysis) return selected;
   const resultOf = (play: CardPattern | null) => play

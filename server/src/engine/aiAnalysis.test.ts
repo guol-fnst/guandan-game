@@ -555,3 +555,33 @@ test('partner head changes the objective and unmeasured PASS cannot ignore a loc
   assert.equal(finalizeAiDecision(null, [joker], hand, last, false, Rank.Two, context, undefined, joker), null,
     'cannot pretend an already finished opponent is still about to finish');
 });
+
+
+test('repeated enemy leads spend a loose joker with a group exit; teammate and calm passes remain', () => {
+  const hand = rankedHand([Rank.BigJoker, 3, 3, 3, 5]);
+  const joker = generateLegalPlays(hand, 2).find(p => p.rank === Rank.BigJoker)!;
+  const last = generateLegalPlays(rankedHand([Rank.Two]), 2)[0];
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 12; });
+  context.actionHistory = [{ seatIndex: 1, action: 'play', pattern: last },
+    { seatIndex: 0, action: 'pass' }, { seatIndex: 1, action: 'play', pattern: last }];
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, 2, context, undefined, null), joker);
+  context.actionHistory = context.actionHistory.slice(-1);
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, 2, context, undefined, null), null);
+  context.lastPlayPlayerIndex = 2;
+  assert.equal(finalizeAiDecision(null, [joker], hand, last, false, 2, context, undefined, joker), null);
+});
+
+test('last response to a reported single cannot save a bomb until after the opponent finishes', () => {
+  const hand = rankedHand([4, 4, 4, 4, 6, 7]);
+  const bomb = generateLegalPlays(hand, 2).find(p => p.type === PatternType.Bomb4)!;
+  const last = generateLegalPlays(rankedHand([Rank.King, Rank.King]), 2).find(p => p.type === PatternType.Pair)!;
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 1;
+  context.passCount = 2;
+  context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = p.seatIndex === 1 ? 1 : 8; });
+  assert.equal(finalizeAiDecision(null, [bomb], hand, last, false, 2, context, undefined, null), bomb);
+  context.players[1].finishRank = 1;
+  assert.equal(finalizeAiDecision(null, [bomb], hand, last, false, 2, context, undefined, null), null);
+});
