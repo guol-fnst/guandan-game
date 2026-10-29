@@ -7,7 +7,7 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
-  behaviorConsistencyWeight, inferSeatBeliefs,
+  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo,
 } from './aiAnalysis';
 import { llmFindBestPlay } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
@@ -584,4 +584,24 @@ test('last response to a reported single cannot save a bomb until after the oppo
   assert.equal(finalizeAiDecision(null, [bomb], hand, last, false, 2, context, undefined, null), bomb);
   context.players[1].finishRank = 1;
   assert.equal(finalizeAiDecision(null, [bomb], hand, last, false, 2, context, undefined, null), null);
+});
+
+
+test('model tempo remembers repeated passes beyond recent history and uses table progress', () => {
+  const context = contextFor([rankedHand([3]), [], [], []]);
+  context.players.forEach(p => { p.cardCount = p.seatIndex === 1 ? 8 : 26; });
+  context.lastPlayPlayerIndex = 1;
+  const pattern = generateLegalPlays(rankedHand([Rank.Ace]), 2)[0];
+  context.actionHistory = Array.from({ length: 6 }, () => [
+    { seatIndex: 1, action: 'play' as const, pattern },
+    { seatIndex: 0, action: 'pass' as const },
+    { seatIndex: 2, action: 'pass' as const },
+    { seatIndex: 3, action: 'pass' as const },
+  ]).flat();
+  context.recentActions = context.actionHistory.slice(-12);
+  assert.equal(decisionTempo(context).consecutiveLeaderPlays, 6);
+  assert.equal(decisionTempo(context).ownPassesDuringStreak, 6);
+  assert.equal(decisionTempo(context).stage, '中盘');
+  context.players[1].cardCount = 1;
+  assert.equal(decisionTempo(context).stage, '残局');
 });

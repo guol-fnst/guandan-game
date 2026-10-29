@@ -806,3 +806,25 @@ export async function analyzeDecision(
   });
   return finish();
 }
+
+
+/** Compact temporal context derived from the complete public action history. */
+export function decisionTempo(context?: AiDecisionContext) {
+  const history = context?.actionHistory || context?.recentActions || [];
+  let consecutiveLeaderPlays = 0;
+  let ownPassesDuringStreak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const action = history[i];
+    if (action.action === 'play') {
+      if (action.seatIndex !== context?.lastPlayPlayerIndex) break;
+      consecutiveLeaderPlays++;
+    } else if (action.seatIndex === context?.selfSeatIndex) ownPassesDuringStreak++;
+  }
+  const active = context?.players.filter(player => player.finishRank === null) || [];
+  const minimum = active.length ? Math.min(...active.map(player => player.cardCount)) : undefined;
+  const stage = context?.players.some(player => player.finishRank !== null) || (minimum !== undefined && minimum <= 5)
+    ? '残局' : minimum !== undefined && minimum >= 20 && history.filter(a => a.action === 'play').length <= 4
+      ? '开局' : '中盘';
+  return { stage, leaderSeat: context?.lastPlayPlayerIndex, consecutiveLeaderPlays,
+    ownPassesDuringStreak, minimumActiveCount: minimum };
+}

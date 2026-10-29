@@ -1,6 +1,6 @@
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
-import { analysisKey, buildPublicKnowledge, buildTeamPlan } from './aiAnalysis';
+import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
@@ -242,7 +242,7 @@ export async function llmFindBestPlay(
 
 信息边界：只用自己手牌、公开历史、各家余牌、进还贡、当前桌面和程序分析。未见牌不确定属于谁；过牌不等于不能接。hand_combinations是全部手牌结构，仅供规划；legal_actions是当前可选动作。它们按对应schema解释，等价实体牌已合并并由本地评分保留较优代表。只能返回legal_actions中的action_id。
 
-目标顺序：本方有利名次与升级、双上、阻止对方双上、送队友、控制牌权、保存炸弹/同花顺/逢人配、减少剩余手数和坏结构。不要只追求自己先走。队友已头游时立即转为争二游；对手连续领牌或接近走完，要比较主动接管，不能因自己手牌多就一直等待。对手已二游后改争三游。无抽样模拟不等于PASS更安全。team_routes提供自己走、送队友、接管换牌型、让牌保控制的可行备选；通过action_id查对应动作analysis.simulation（PASS查local_analysis.pass_simulation），比较模拟升级收益、座次拦截风险和保留的续牌，team_plan只是初始倾向。两张余牌不能直接认定为对子。
+目标顺序：本方有利名次与升级、双上、阻止对方双上、送队友、控制牌权、保存炸弹/同花顺/逢人配、减少剩余手数和坏结构。不要只追求自己先走。tempo给出完整公开历史中的对手连续出牌次数与自己期间过牌次数；反复保留控制牌必须说明等待什么条件，对手连续走牌或即将走完时重新比较接管。散大王接管后可转出整组牌时有实际收益；先比较不拆组的普通接牌，不必每次都花王或炸弹。阶段按全桌进程判断，不能因自己还剩很多牌就当作开局。队友已头游时立即转为争二游；对手连续领牌或接近走完，要比较主动接管，不能因自己手牌多就一直等待。对手已二游后改争三游。无抽样模拟不等于PASS更安全。team_routes提供自己走、送队友、接管换牌型、让牌保控制的可行备选；通过action_id查对应动作analysis.simulation（PASS查local_analysis.pass_simulation），比较模拟升级收益、座次拦截风险和保留的续牌，team_plan只是初始倾向。两张余牌不能直接认定为对子。
 
 策略：出牌张数不等于收益，先比较剩余结构。比较出牌后剩余手数、小孤牌和难走的小对子；拆三张或对子后若留下小孤牌应降低优先级，若余牌仍能组成顺子等结构或直接走完则不机械惩罚。三连对、二连三不因一次出6张而自动优先。A-2-3、2-3-4等低连对会消耗级牌对或A对，比较保留控制对的三带二路线；仅在减手数、续牌或直接走完确有收益时使用。领出看减手数、后续回手和队友需求；跟牌通常用最低充分牌力。三带二的对子不增加牌力；同样三张优先带不破坏结构的小对，保留王对、级牌对，直接走完或明确团队收益除外。同类结构相近时先小后大，但对手报双可先用大对控权。队友牌默认不压；仅为直接走完、必要拦截或明确团队收益接管。敌方压过队友后可反压。炸弹用于阻止对手走牌、送队友或形成连续牌权，不赢低价值一轮；炸后评估续牌。候选continuation.extraTurns表示本手加余牌相对原拆分新增的手数，exact=false仅为估计；largestRemainingGroup不是必胜路线。尤其检查整炸是否拿走顺子所需的一张，导致后续变成多个小单。对手即将走完可接受结构代价，平静局面避免为抢一轮破坏收尾。逢人配优先组成强结构，残局可降低保存成本。
 
@@ -259,12 +259,8 @@ export async function llmFindBestPlay(
   const lastPlayer = lastPlayerSnapshot
     ? `座位${lastPlayerSnapshot.seatIndex}（${relationNames[lastPlayerSnapshot.relation]}）`
     : '无';
-  const minimumActiveCount = context?.players
-    .filter(player => player.finishRank === null)
-    .reduce((minimum, player) => Math.min(minimum, player.cardCount), Number.POSITIVE_INFINITY);
-  const stage = minimumActiveCount !== undefined && minimumActiveCount <= 5
-    ? '残局'
-    : hand.length >= 20 ? '开局' : hand.length >= 10 ? '中盘' : '收官';
+  const tempo = decisionTempo(context);
+  const stage = tempo.stage;
   const knowledge = context ? buildPublicKnowledge(hand, context) : null;
   const representedCounts = legalPlays.map((_, index) => equivalentCounts[index] || 1);
   const representedHandCombinationCounts = handCombinations
@@ -278,6 +274,7 @@ export async function llmFindBestPlay(
       ? `第${context.roundNumber}局，队伍A ${context.teamLevels[0]}级，队伍B ${context.teamLevels[1]}级，队伍${context.leadingTeam === 0 ? 'A' : 'B'}在台`
       : '未提供',
     stage,
+    tempo,
     team_plan: analysis?.teamPlan ?? buildTeamPlan(hand, handCombinations, context),
     team_routes: analysis?.teamRoutes?.map(({ actionKey, simulation: _simulation, ...route }) => ({ ...route,
       action_id: actionKey === null ? 'PASS' : legalPlays.findIndex(play => analysisKey(play) === actionKey),
