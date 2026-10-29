@@ -11,6 +11,7 @@ import { findBestPlay, findSmartPlay, generateLegalPlays } from '../engine/ai';
 import type { AiDecisionContext, AiRecentAction } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
 import { recordAiDecision } from '../engine/aiTelemetry';
+import { saveRoundReplay } from '../db/replays';
 
 const MAX_PLAYERS = 4;
 const PLAYER_ACTION_TIMEOUT = 90000;
@@ -852,6 +853,7 @@ export class GameRoom {
 
   private endRound() {
     if (!this.state) return;
+    const playedLevel = this.currentLevel;
 
     if (this.turnTimer) clearTimeout(this.turnTimer);
     this.turnTimer = null;
@@ -904,6 +906,15 @@ export class GameRoom {
       this.state.phase = GamePhase.GameOver;
     } else if (limitReached) {
       result.endReason = '达到比赛限制，级数相同，下一副加赛';
+    }
+    try {
+      saveRoundReplay({
+        roomId: this.id, roundNumber: this.roundNumber, level: playedLevel,
+        players: this.players.map((player, seatIndex) => ({ id: player.id, name: player.name, seatIndex })),
+        actions: this.publicActionHistory, result,
+      });
+    } catch (error) {
+      console.error('Failed to save round replay:', error);
     }
     this.broadcastEvent('round_end', result);
     this.state.roundResult = result;
