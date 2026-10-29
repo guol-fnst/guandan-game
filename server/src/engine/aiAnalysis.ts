@@ -625,15 +625,17 @@ export function rollout(
     if (step > 0 && !branched && replyBranch && trick
       && seat % 2 !== context.selfSeatIndex % 2) {
       branched = true;
-      if (replyBranch.mode === 'hold') action = null;
+      const replies = replyBranch.generate(hands[seat], level).filter(play => canBeat(play, trick, level));
+      const finish = replies.find(play => play.cards.length === hands[seat].length);
+      // Conserving control never means declining a legal immediate finish.
+      if (finish) action = finish;
+      else if (replyBranch.mode === 'hold') action = null;
       else {
-        const replies = replyBranch.generate(hands[seat], level).filter(play => canBeat(play, trick, level));
-        const finish = replies.find(play => play.cards.length === hands[seat].length);
         const controls = replies.filter(play => !isBombPattern(play)).sort((a, b) =>
           canBeat(a, b, level) ? -1 : canBeat(b, a, level) ? 1 : 0);
         const bombs = replies.filter(isBombPattern).sort((a, b) =>
           canBeat(a, b, level) ? 1 : canBeat(b, a, level) ? -1 : 0);
-        action = finish || controls[0] || bombs[0] || null;
+        action = controls[0] || bombs[0] || null;
       }
     }
     if (action) {

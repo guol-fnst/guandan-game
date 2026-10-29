@@ -444,7 +444,7 @@ test('endgame response branches expose an opponent finishing after a probe', () 
     { mode: 'hold', generate: generateLegalPlays })!;
   assert.equal(baseline.win, true);
   assert.equal(control.win, false, 'active reply finishes before the probing player can recapture');
-  assert.deepEqual(hold, baseline);
+  assert.deepEqual(hold, control, 'even a conservative opponent takes an immediate finish');
 });
 
 
