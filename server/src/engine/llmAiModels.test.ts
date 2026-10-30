@@ -8,7 +8,7 @@ import {
   normalizeAiSelection,
   llmFindBestPlay,
 } from './llmAi';
-import { generateLegalPlays } from './ai';
+import { generateLegalPlays, findSmartPlay } from './ai';
 import { Rank, Suit } from '../../../shared/types';
 
 test('DeepSeek exposes queried non-Pro models and rejects Pro models', () => {
@@ -90,6 +90,64 @@ test('default Qwen request uses Fueternal credentials and disables thinking', as
     names.forEach((name, index) => {
       if (previous[index] === undefined) delete process.env[name];
       else process.env[name] = previous[index];
+    });
+  }
+});
+
+
+test('model failover precedes local rules and keeps only the successful plan', async () => {
+  const oldFetch = globalThis.fetch;
+  const names = ['DEEPSEEK_API_KEY', 'LOCAL_LLM_API_KEY', 'DEEPSEEK_MODEL'] as const;
+  const old = names.map(name => process.env[name]);
+  process.env.DEEPSEEK_API_KEY = process.env.LOCAL_LLM_API_KEY = 'test-only';
+  process.env.DEEPSEEK_MODEL = 'deepseek-flash';
+  const hand = [0, 1, 2].map(id => ({ id, rank: Rank.Five, suit: Suit.Spade }));
+  const last = { cards: [{ id: 99, rank: Rank.Three, suit: Suit.Spade }],
+    type: 'single' as any, rank: Rank.Three, length: 1 };
+  try {
+    for (const scenario of [
+      { primary: 'valid', backup: 'valid', calls: 1 },
+      { primary: 'invalid', backup: 'valid', calls: 2 },
+      { primary: 'http', backup: 'valid', calls: 2 },
+      { primary: 'timeout', backup: 'valid', calls: 2 },
+      { primary: 'invalid', backup: 'timeout', calls: 2 },
+      { primary: 'invalid', backup: 'invalid', calls: 2 },
+      { primary: 'pass', backup: 'valid', calls: 1 },
+      { primary: 'invalid', backup: 'valid', calls: 2, reverse: true },
+    ]) {
+      const requests: any[] = [];
+      let plan: any;
+      globalThis.fetch = (async (_url, init) => {
+        const body = JSON.parse(init!.body as string);
+        requests.push(body);
+        const result = requests.length === 1 ? scenario.primary : scenario.backup;
+        if (result === 'timeout') throw new DOMException('deadline', 'AbortError');
+        if (result === 'http') return new Response('', { status: 503 });
+        return new Response(JSON.stringify({ choices: [{ message: { content: result === 'invalid'
+          ? '{broken' : JSON.stringify({ action_id: result === 'pass' ? 'PASS' : 0,
+            strategy_plan: { next: body.model, reconsider_when: '对手报单' } }) } }] }));
+      }) as typeof fetch;
+      const primary = scenario.reverse ? { provider: 'local' as const, model: LOCAL_AI_MODEL }
+        : { provider: 'deepseek' as const, model: 'deepseek-flash' };
+      const result = await findSmartPlay(hand, scenario.primary === 'pass' ? last : null,
+        scenario.primary !== 'pass', Rank.Two, undefined, primary, value => { plan = value; });
+      assert.equal(requests.length, scenario.calls, JSON.stringify(scenario));
+      assert.equal(requests[0].model, primary.model);
+      if (requests.length === 2) {
+        assert.equal(requests[1].model, scenario.reverse ? 'deepseek-flash' : LOCAL_AI_MODEL);
+        assert.deepEqual(requests[1].messages, requests[0].messages, 'same state, candidates and memory');
+      }
+      const successful = scenario.primary === 'valid' || scenario.primary === 'pass'
+        || scenario.backup === 'valid';
+      assert.equal(plan?.next, successful ? requests.at(-1).model : undefined);
+      if (scenario.primary === 'pass') assert.equal(result, null, 'valid PASS must not retry');
+      else assert.equal(result?.cards.length, hand.length, 'both failed still produce a legal finish');
+    }
+  } finally {
+    globalThis.fetch = oldFetch;
+    names.forEach((name, i) => {
+      if (old[i] === undefined) delete process.env[name];
+      else process.env[name] = old[i];
     });
   }
 });

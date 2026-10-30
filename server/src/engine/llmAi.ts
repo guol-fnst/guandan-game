@@ -444,7 +444,7 @@ export async function llmFindBestPlay(
     if (rawActionId === 'PASS' || optionId === null) {
       if (isFreePlay) {
         recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
-        console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] rejected pass during free play; using rule-based AI`);
+        console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] rejected pass during free play; trying next model or local fallback`);
         return undefined;
       }
       const plan = parseStrategyPlan(parsed.strategy_plan);
@@ -455,7 +455,7 @@ export async function llmFindBestPlay(
     }
     if (!Number.isInteger(optionId) || optionId < 0 || optionId >= legalPlays.length) {
       recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
-      console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] invalid option=${String(optionId)}; using rule-based AI`);
+      console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] invalid option=${String(optionId)}; trying next model or local fallback`);
       return undefined;
     }
 
@@ -467,7 +467,7 @@ export async function llmFindBestPlay(
   } catch (error: any) {
     if (error.name === 'AbortError') {
       recordAiModelCall('timeout', performance.now() - modelStarted, promptCharacters);
-      console.log(`[LLM AI] ${normalizedSelection.provider}/${normalizedSelection.model} timeout, using rule-based AI`);
+      console.log(`[LLM AI] ${normalizedSelection.provider}/${normalizedSelection.model} timeout, trying next model or local fallback`);
     } else {
       recordAiModelCall(error instanceof SyntaxError ? 'invalid_response' : 'error',
         performance.now() - modelStarted, promptCharacters);

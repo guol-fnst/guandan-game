@@ -4,7 +4,7 @@ import {
   isWildCard, validWildSubstitutions,
 } from './patterns';
 import { canBeat, isBombPattern } from './compare';
-import { llmFindBestPlay } from './llmAi';
+import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
 import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
@@ -1099,34 +1099,44 @@ export async function findSmartPlay(
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
   const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
 
-  try {
-    let plan: AiStrategyPlan | undefined;
-    const llmResult = await llmFindBestPlay(
-      hand,
-      legalPlays,
-      lastPattern,
-      isFreePlay,
-      currentLevel,
-      context,
-      selection,
-      analysis,
-      equivalentCounts,
-      handCombinations.plays,
-      handCombinations.equivalentCounts,
-      value => { plan = value; },
-    );
-    // undefined means the model was unavailable/invalid; null is an intentional pass.
-    if (llmResult !== undefined) {
-      const final = finalizeAiDecision(
-        llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
+  const primary = normalizeAiSelection(
+    (selection ?? DEFAULT_AI_SELECTION).provider, (selection ?? DEFAULT_AI_SELECTION).model,
+  );
+  const backup = primary.provider === 'deepseek'
+    ? { provider: 'local' as const, model: LOCAL_AI_MODEL }
+    : normalizeAiSelection('deepseek', '');
+  // Each provider has a 20s request deadline (including body read): at most
+  // two attempts, with the existing 90s turn watchdog/stale-state guard intact.
+  for (const model of [primary, backup]) {
+    try {
+      let plan: AiStrategyPlan | undefined;
+      const llmResult = await llmFindBestPlay(
+        hand,
+        legalPlays,
+        lastPattern,
+        isFreePlay,
+        currentLevel,
+        context,
+        model,
+        analysis,
+        equivalentCounts,
+        handCombinations.plays,
+        handCombinations.equivalentCounts,
+        value => { plan = value; },
       );
-      // A changed action invalidates the model's continuation, including PASS.
-      if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
-        onPlan?.(plan);
+      // undefined means the model was unavailable/invalid; null is an intentional pass.
+      if (llmResult !== undefined) {
+        const final = finalizeAiDecision(
+          llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
+        );
+        // A changed action invalidates the model's continuation, including PASS.
+        if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
+          onPlan?.(plan);
+        }
+        return final;
       }
-      return final;
-    }
-  } catch {}
+    } catch {}
+  }
 
   return finalizeAiDecision(
     fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
