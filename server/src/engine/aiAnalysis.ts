@@ -613,6 +613,7 @@ export function rollout(
     if (performance.now() >= deadline) return null;
     const simContext: AiDecisionContext = {
       ...context, actionHistory: history ? [...history] : undefined, recentActions: [...recent],
+      strategyMemory: undefined, // Rollout seats must not inherit the real player's private plan.
       selfSeatIndex: seat, partnerSeatIndex: (seat + 2) % 4,
       lastPlayPlayerIndex: winner, passCount: passes,
       players: hands.map((cards, i) => ({

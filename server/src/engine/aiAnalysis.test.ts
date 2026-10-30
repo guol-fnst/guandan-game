@@ -9,7 +9,7 @@ import {
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo,
 } from './aiAnalysis';
-import { llmFindBestPlay } from './llmAi';
+import { llmFindBestPlay, parseStrategyPlan } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
 import { GameRoom } from '../services/GameRoom';
 import { getAiTelemetrySnapshot, resetAiTelemetry } from './aiTelemetry';
@@ -384,9 +384,23 @@ test('room AI context derives counts from public history and clears memory next 
   const context = contextFor(hands);
   const internals = room as unknown as {
     publicActionHistory: AiRecentAction[];
+    aiStrategyMemory: Map<string, any>;
+    recordAiAction(action: AiRecentAction): void;
     getAiDecisionContext(seat: number): AiDecisionContext;
   };
   internals.publicActionHistory = context.actionHistory!;
+  const memory = { next: '先试探再收牌', reconsiderWhen: '对手报单', afterAction: 1, executed: 'PASS' };
+  internals.aiStrategyMemory.set('p0', memory);
+  internals.aiStrategyMemory.set('p1', { ...memory, next: '保留对子' });
+  assert.equal(internals.getAiDecisionContext(0).strategyMemory?.next, memory.next);
+  assert.equal(internals.getAiDecisionContext(1).strategyMemory?.next, '保留对子');
+  assert.equal(internals.getAiDecisionContext(2).strategyMemory, undefined);
+  internals.publicActionHistory = [...internals.publicActionHistory];
+  internals.recordAiAction({ seatIndex: 0, action: 'pass' });
+  assert.equal(internals.getAiDecisionContext(0).strategyMemory, undefined);
+  assert.ok(internals.getAiDecisionContext(1).strategyMemory);
+  internals.publicActionHistory = context.actionHistory!;
+
   // Deliberately make private hands disagree: they must not be consulted.
   room.hands.set('p1', deck.slice(0, 20));
   assert.deepEqual(internals.getAiDecisionContext(0).players.map(p => p.cardCount), [1, 1, 1, 1]);
@@ -395,6 +409,7 @@ test('room AI context derives counts from public history and clears memory next 
     room.startGame();
     const next = internals.getAiDecisionContext(0);
     assert.deepEqual(next.actionHistory, []);
+    assert.equal(internals.aiStrategyMemory.size, 0);
     assert.deepEqual(next.players.map(p => p.cardCount), [27, 27, 27, 27]);
   } finally {
     if (room.turnTimer) clearTimeout(room.turnTimer);
@@ -656,4 +671,50 @@ test('late wild bomb yields to a proven ordinary lock that preserves the exit', 
   context.lastPlayPlayerIndex = 2;
   assert.equal(enforceTeamStrategy(bomb, [bomb, single, queen], hand, last, false, 11, context, undefined), null,
     'the new substitution does not authorize stealing a teammate trick');
+});
+
+test('strategy memory reaches only its decision; corrected actions discard the proposed plan', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-only';
+  const hand = rankedHand([3, 3, 3]);
+  const all = generateLegalPlays(hand, 2);
+  const context = contextFor([hand, [], [], []]);
+  context.strategyMemory = { next: '先试探', reconsiderWhen: '对手报单', afterAction: 0, executed: 'PASS' };
+  let requestedInput: any;
+  let rawResult = { action_id: 0, strategy_plan: { next: '保留控制张', reconsider_when: '对手报单' } };
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(init!.body as string);
+    requestedInput = JSON.parse(body.messages[1].content.split('\n')[1]);
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(rawResult) } }] }) } as Response;
+  }) as typeof fetch;
+  try {
+    let received: any;
+    await llmFindBestPlay(hand, all, null, true, 2, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }, undefined, [], all, [], p => { received = p; });
+    assert.deepEqual(requestedInput.strategy_memory, context.strategyMemory);
+    assert.equal((received as any).next, '保留控制张');
+    assert.equal(parseStrategyPlan({ next: 'x' }), undefined);
+    assert.equal(parseStrategyPlan({ next: 'x'.repeat(100), reconsider_when: 'y' })?.next.length, 80);
+    // Invalid free-lead PASS must never publish a plan.
+    rawResult.action_id = 'PASS' as any;
+    received = undefined;
+    await llmFindBestPlay(hand, all, null, true, 2, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }, undefined, [], all, [], p => { received = p; });
+    assert.equal(received, undefined);
+    // Index zero is the full-hand finish after sorting. Index one is a
+    // legal partial play which the finish guard must replace.
+    rawResult.action_id = 1;
+    await findSmartPlay(hand, null, true, 2, undefined,
+      { provider: 'deepseek', model: 'deepseek-flash' }, p => { received = p; });
+    assert.equal(received, undefined);
+    rawResult.action_id = 0;
+    await findSmartPlay(hand, null, true, 2, undefined,
+      { provider: 'deepseek', model: 'deepseek-flash' }, p => { received = p; });
+    assert.equal((received as any).next, '保留控制张');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  }
 });

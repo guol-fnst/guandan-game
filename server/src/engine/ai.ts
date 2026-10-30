@@ -5,7 +5,7 @@ import {
 } from './patterns';
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay } from './llmAi';
-import type { AiDecisionContext } from './llmAi';
+import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
 import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
@@ -1043,6 +1043,7 @@ export async function findSmartPlay(
   currentLevel: number,
   context?: AiDecisionContext,
   selection?: AiModelSelection,
+  onPlan?: (plan: AiStrategyPlan) => void,
 ): Promise<CardPattern | null> {
   const allPlays = generateLegalPlays(hand, currentLevel);
   const ruleResult = findBestPlay(hand, lastPattern, isFreePlay, currentLevel, context, allPlays);
@@ -1099,6 +1100,7 @@ export async function findSmartPlay(
   const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
 
   try {
+    let plan: AiStrategyPlan | undefined;
     const llmResult = await llmFindBestPlay(
       hand,
       legalPlays,
@@ -1111,11 +1113,19 @@ export async function findSmartPlay(
       equivalentCounts,
       handCombinations.plays,
       handCombinations.equivalentCounts,
+      value => { plan = value; },
     );
     // undefined means the model was unavailable/invalid; null is an intentional pass.
-    if (llmResult !== undefined) return finalizeAiDecision(
-      llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
-    );
+    if (llmResult !== undefined) {
+      const final = finalizeAiDecision(
+        llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
+      );
+      // A changed action invalidates the model's continuation, including PASS.
+      if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
+        onPlan?.(plan);
+      }
+      return final;
+    }
   } catch {}
 
   return finalizeAiDecision(

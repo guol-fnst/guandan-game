@@ -8,7 +8,7 @@ import { identifyPattern, isValidPlay, declarePatterns } from '../engine/pattern
 import { canBeat, canFreePlay, isBombPattern } from '../engine/compare';
 import { getTeam, getLevelDelta, canResistTribute, selectTributeCard, selectReturnTributeCard, isValidReturnTributeCard } from '../engine/rules';
 import { findBestPlay, findSmartPlay, generateLegalPlays } from '../engine/ai';
-import type { AiDecisionContext, AiRecentAction } from '../engine/llmAi';
+import type { AiDecisionContext, AiRecentAction, AiStrategyPlan, AiStrategyMemory } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
 import { recordAiDecision } from '../engine/aiTelemetry';
 import { saveRoundReplay } from '../db/replays';
@@ -32,6 +32,7 @@ export class GameRoom {
   currentLevel: number = Rank.Two;
   turnTimer: ReturnType<typeof setTimeout> | null = null;
   recentActions: AiRecentAction[] = [];
+  private aiStrategyMemory = new Map<string, AiStrategyMemory>();
   private publicActionHistory: AiRecentAction[] = [];
   private roundReplay: string[] = [];
   roundNumber: number = 0;
@@ -265,6 +266,7 @@ export class GameRoom {
     this.lockSeatsForGame();
     const previousRankings = this.roundNumber > 0 ? [...this.rankings] : [];
     this.roundNumber++;
+    this.aiStrategyMemory.clear();
     if (!this.matchStartedAt) this.matchStartedAt = Date.now();
     this.reportedCounts.clear();
     const deck = shuffleDeck(createDeck());
@@ -788,6 +790,9 @@ export class GameRoom {
   private recordAiAction(action: AiRecentAction) {
     this.recentActions = [...this.recentActions.slice(-11), action];
     this.publicActionHistory.push(action);
+    // Any actual action invalidates the previous plan; aiPlay installs a new
+    // one only after a successful, unchanged model decision.
+    this.aiStrategyMemory.delete(this.players[action.seatIndex]?.id);
     const playerName = this.players[action.seatIndex]?.name || '未知玩家';
     if (action.action === 'pass') {
       this.roundReplay.push(`${playerName}：不出`);
@@ -813,6 +818,7 @@ export class GameRoom {
   private getAiDecisionContext(playerIdx: number): AiDecisionContext {
     const partnerSeatIndex = (playerIdx + 2) % MAX_PLAYERS;
     return {
+      strategyMemory: this.aiStrategyMemory.get(this.players[playerIdx]?.id),
       selfSeatIndex: playerIdx,
       partnerSeatIndex,
       lastPlayPlayerIndex: this.state?.lastPlayPlayerIndex ?? -1,
@@ -853,6 +859,7 @@ export class GameRoom {
 
   private endRound() {
     if (!this.state) return;
+    this.aiStrategyMemory.clear();
     const playedLevel = this.currentLevel;
 
     if (this.turnTimer) clearTimeout(this.turnTimer);
@@ -938,6 +945,9 @@ export class GameRoom {
     let decisionFailed = false;
     try {
       const expectedState = this.state;
+      const expectedRound = this.roundNumber;
+      let plan: AiStrategyPlan | undefined;
+      let executed = false;
       const playerIdx = this.state.currentPlayerIndex;
       const player = this.players[playerIdx];
       const hand = this.hands.get(player.id) || [];
@@ -954,6 +964,7 @@ export class GameRoom {
             this.state.currentLevel,
             context,
             this.aiModelSelection,
+            value => { plan = value; },
           )
         : findBestPlay(
             hand,
@@ -974,10 +985,10 @@ export class GameRoom {
       }
 
       if (pattern) {
-        this.playCards(player.id, pattern.cards, { type: pattern.type, rank: pattern.rank });
+        executed = this.playCards(player.id, pattern.cards, { type: pattern.type, rank: pattern.rank }).success;
       } else {
         if (this.state.lastPlay) {
-          this.handlePass(player.id);
+          executed = this.handlePass(player.id).success;
         } else {
           const fallback = findBestPlay(
             hand, null, true, this.state.currentLevel, this.getAiDecisionContext(playerIdx),
@@ -986,6 +997,12 @@ export class GameRoom {
             this.playCards(player.id, fallback.cards, { type: fallback.type, rank: fallback.rank });
           }
         }
+      }
+      if (executed && plan && this.roundNumber === expectedRound && this.state?.phase === GamePhase.Playing) {
+        this.aiStrategyMemory.set(player.id, {
+          ...plan, afterAction: this.publicActionHistory.length,
+          executed: pattern ? `${pattern.type}:${pattern.rank}:${pattern.cards.length}` : 'PASS',
+        });
       }
     } catch (e) {
       decisionFailed = true;

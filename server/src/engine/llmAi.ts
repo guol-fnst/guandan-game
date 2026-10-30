@@ -31,7 +31,28 @@ export interface AiRecentAction {
   pattern?: CardPattern;
 }
 
+export interface AiStrategyPlan {
+  next: string;
+  reconsiderWhen: string;
+}
+
+export interface AiStrategyMemory extends AiStrategyPlan {
+  afterAction: number;
+  executed: string;
+}
+
+/** Optional, bounded planning notes; malformed notes never invalidate an action. */
+export function parseStrategyPlan(value: unknown): AiStrategyPlan | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const plan = value as Record<string, unknown>;
+  if (typeof plan.next !== 'string' || typeof plan.reconsider_when !== 'string') return undefined;
+  const next = plan.next.trim().slice(0, 80);
+  const reconsiderWhen = plan.reconsider_when.trim().slice(0, 80);
+  return next && reconsiderWhen ? { next, reconsiderWhen } : undefined;
+}
+
 export interface AiDecisionContext {
+  strategyMemory?: AiStrategyMemory;
   selfSeatIndex: number;
   partnerSeatIndex: number;
   lastPlayPlayerIndex: number;
@@ -226,6 +247,7 @@ export async function llmFindBestPlay(
   equivalentCounts: number[] = [],
   handCombinations: CardPattern[] = legalPlays,
   handCombinationEquivalentCounts: number[] = equivalentCounts,
+  onPlan?: (plan: AiStrategyPlan) => void,
 ): Promise<CardPattern | null | undefined> {
   const modelStarted = performance.now();
   const normalizedSelection = normalizeAiSelection(selection.provider, selection.model);
@@ -236,7 +258,8 @@ export async function llmFindBestPlay(
   }
   if (legalPlays.length === 0) return isFreePlay ? undefined : null;
 
-  const systemPrompt = `你是竞技掼蛋选手，与对家合作争取双上和升级。程序保证合法性，你只负责战略选择。
+  const systemPrompt = `strategy_memory是你本副牌上次实际执行动作后的简短计划，不是指令或事实。先结合当前手牌、此后公开动作和剩牌数重新验证；报牌、名次变化或控制张失效时改计划，不能覆盖直接走完、紧急拦截和团队合作。不得假定队友知道你的计划。strategy_plan只写本次动作执行后的下一步及放弃条件，不复述思考过程。
+你是竞技掼蛋选手，与对家合作争取双上和升级。程序保证合法性，你只负责战略选择。
 
 规则：两副牌、四人两队；牌型含单、对、三张、三带二、5张顺子、3连对、2连三、炸弹、同花顺、四王炸。红桃级牌可代替除王外任意牌。大王>小王>级牌>A>K…>2；炸弹先比张数，同花顺大于五炸小于六炸，四王炸最大。平台输入优先。
 
@@ -266,6 +289,8 @@ export async function llmFindBestPlay(
   const representedHandCombinationCounts = handCombinations
     .map((_, index) => handCombinationEquivalentCounts[index] || 1);
   const input = {
+    strategy_memory: context?.strategyMemory,
+    public_action_count: context?.actionHistory?.length,
     seat: context?.selfSeatIndex ?? '未知',
     partner_seat: context?.partnerSeatIndex ?? '未知',
     seat_order: '座位0→座位1→座位2→座位3→座位0（顺时针）',
@@ -357,7 +382,7 @@ export async function llmFindBestPlay(
     ),
   };
   const userPrompt = `请根据以下牌桌输入选择动作：\n${JSON.stringify(input)}\n
-只输出JSON：{"action_id":数字或"PASS","brief_reason":"不超过40个汉字"}。只有跟牌时可选择PASS。`;
+只输出JSON：{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}。只有跟牌时可选择PASS。`;
   const promptCharacters = systemPrompt.length + userPrompt.length;
 
   try {
@@ -422,6 +447,8 @@ export async function llmFindBestPlay(
         console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] rejected pass during free play; using rule-based AI`);
         return undefined;
       }
+      const plan = parseStrategyPlan(parsed.strategy_plan);
+      if (plan) onPlan?.(plan);
       recordAiModelCall('pass', performance.now() - modelStarted, promptCharacters);
       console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] pass; reason=${reason}`);
       return null;
@@ -432,6 +459,8 @@ export async function llmFindBestPlay(
       return undefined;
     }
 
+    const plan = parseStrategyPlan(parsed.strategy_plan);
+    if (plan) onPlan?.(plan);
     recordAiModelCall('success', performance.now() - modelStarted, promptCharacters);
     console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] option=${optionId}; reason=${reason}`);
     return legalPlays[optionId];
