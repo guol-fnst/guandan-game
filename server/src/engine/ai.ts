@@ -669,8 +669,22 @@ function orderCandidates(
     const looseBonus = opponentLed && play.type === PatternType.Single
       && counts.get(card.rank)?.length === 1 && !isJoker(card)
       && !isWildCard(card, currentLevel) && !sequenceIds.has(card.id) ? 80 : 0;
+    let structureScore = structure.get(play) || 0;
+    // An isolated joker always removes one partition when led. That is not
+    // progress towards regaining the lead to unload the rest of the hand.
+    // Discount that bookkeeping bonus and price the lost future recapture.
+    // This is a finite preference: follows, reported threats and a one-play
+    // exit retain their usual value, and paired simulation can still override.
+    if (isFreePlay && play.type === PatternType.Single && isJoker(card)
+      && !context?.players.some(p => p.relation === 'opponent' && p.finishRank === null && p.cardCount <= 2)
+      && wholeHandPlays.some(group => !isBombPattern(group) && group.cards.length >= 3
+        && group.cards.every(c => c.id !== card.id))
+      && !wholeHandPlays.some(exit => exit.cards.length === hand.length - 1
+        && exit.cards.every(c => c.id !== card.id))) {
+      structureScore = Math.min(0, structureScore) - 240;
+    }
     scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds, teamPlan)
-      + recaptureBonus(play) + (structure.get(play) || 0) + looseBonus
+      + recaptureBonus(play) + structureScore + looseBonus
       + (endgameRoutes[analysisKey(play)]?.score || 0)
       + scoreTeamPlan(play, hand, wholeHandPlays, currentLevel, isFreePlay, teamPlan, context, memory));
   }

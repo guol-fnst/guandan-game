@@ -718,3 +718,39 @@ test('strategy memory reaches only its decision; corrected actions discard the p
     else process.env.DEEPSEEK_API_KEY = previousKey;
   }
 });
+
+test('failed-model fallback unloads groups before loose jokers, without disabling interception or finish', async () => {
+  const oldFetch = globalThis.fetch;
+  const names = ['DEEPSEEK_API_KEY', 'LOCAL_LLM_API_KEY'] as const;
+  const old = names.map(name => process.env[name]);
+  process.env.DEEPSEEK_API_KEY = process.env.LOCAL_LLM_API_KEY = 'test-only';
+  globalThis.fetch = (async () => new Response('', { status: 503 })) as typeof fetch;
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  // Physical cards from the reviewed 17-card position (suits affect straights).
+  const hand = [52, 107, 58, 43, 85, 44, 73, 86, 2, 82, 28, 41, 95, 88, 47, 67, 42]
+    .map(id => deck.find(c => c.id === id)!);
+  try {
+    for (const cards of [hand, hand.filter(c => c.rank !== Rank.SmallJoker)]) {
+      const result = await findSmartPlay(cards, null, true, Rank.Two);
+      assert.equal(result?.type, PatternType.ConsecutivePair);
+      assert.equal(result?.rank, Rank.Eight);
+    }
+    const joker = take(Rank.BigJoker);
+    const exitHand = [...joker, ...take(3, 3)];
+    const levelSingle = generateLegalPlays(take(2), Rank.Two)[0];
+    const interception = await findSmartPlay(exitHand, levelSingle, false, Rank.Two);
+    assert.equal(interception?.rank, Rank.BigJoker, 'following an opponent still uses control to get back in');
+    const finish = await findSmartPlay(joker, null, true, Rank.Two);
+    assert.equal(finish?.rank, Rank.BigJoker, 'direct finish never hoards a joker');
+    const allJokers = await findSmartPlay([...joker, ...take(Rank.SmallJoker)], null, true, Rank.Two);
+    assert.ok(allJokers && allJokers.cards.every(c => c.rank >= Rank.SmallJoker),
+      'when only jokers remain they still get played');
+  } finally {
+    globalThis.fetch = oldFetch;
+    names.forEach((name, i) => {
+      if (old[i] === undefined) delete process.env[name];
+      else process.env[name] = old[i];
+    });
+  }
+});
