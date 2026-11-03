@@ -978,6 +978,13 @@ export function enforceTeamStrategy(
         && publicControlEvidence(guarded, hand, level, context)?.unbeatable === true) return guarded;
     }
   }
+  // With only a few low singles left and no recapture card, a higher probe
+  // is not equivalent to the smallest lead. Keep the selected probe; do not
+  // relax conservation for joker controls, pairs or existing grouped exits.
+  if (free && hand.length <= 5 && proposed.type === PatternType.Single
+    && effectiveRank(proposed.rank, level) < Rank.Queen
+    && hand.every(card => effectiveRank(card.rank, level) < Rank.Queen)
+    && !generateLegalPlays(hand, level).some(play => play.cards.length > 1)) return proposed;
   const alternatives = candidates.filter(play => play.cards.length === proposed.cards.length
     && (play.type === proposed.type || (isBombPattern(play) && isBombPattern(proposed)))
     && (canBeat(proposed, play, level)

@@ -790,3 +790,20 @@ test('protect a one-play exit unless interception is urgent or publicly secure',
   assert.equal(publicControlEvidence(ten, hand, 5, safe)?.unbeatable, true);
   assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, safe, analysis), ten);
 });
+
+
+test('short free-lead probes survive the weakest-card guard but follow economy remains', () => {
+  const hand = rankedHand([2, 6, 7, 8]);
+  const plays = generateLegalPlays(hand, 5);
+  const eight = plays.find(p => p.rank === 8)!;
+  assert.equal(enforceTeamStrategy(eight, plays, hand, null, true, 5), eight);
+  const last = generateLegalPlays(rankedHand([3]), 5)[0];
+  const legal = plays.filter(p => p.rank > 3);
+  assert.equal(enforceTeamStrategy(eight, legal, hand, last, false, 5)?.rank, 6,
+    'ordinary following still conserves the stronger card');
+  const context = contextFor([hand, [], [], []]);
+  context.players[1].cardCount = 1;
+  const two = plays.find(p => p.rank === 2)!;
+  assert.equal(enforceTeamStrategy(two, plays, hand, null, true, 5, context), eight,
+    'reported-next-player defence still runs first');
+});
