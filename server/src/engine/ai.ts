@@ -422,7 +422,7 @@ function productivePartnerTakeover(
 ): boolean {
   if (!context || !last || context.lastPlayPlayerIndex !== context.partnerSeatIndex) return false;
   const partner = context.players.find(player => player.relation === 'partner');
-  if (!partner || partner.finishRank !== null || partner.cardCount < 6 || passPosition(context).closesTrick) return false;
+  if (!partner || partner.finishRank !== null || partner.cardCount < 3 || passPosition(context).closesTrick) return false;
   if (![PatternType.Single, PatternType.Pair].includes(play.type) || isBombPattern(last)
     || effectiveRank(last.rank, level) > Rank.Ten
     || effectiveRank(play.rank, level) < effectiveRank(Rank.Ace, level)) return false;
@@ -433,6 +433,11 @@ function productivePartnerTakeover(
     || (counts.get(card.rank)?.length || 0) !== play.cards.length)) return false;
   const used = new Set(play.cards.map(card => card.id));
   const remaining = hand.length - used.size;
+  // A near-finished partner is protected unless public cards prove that
+  // our takeover holds and our shorter remaining hand is a single legal exit.
+  // No actual teammate hand or private plan is consulted.
+  if (partner.cardCount <= 5 && (remaining >= partner.cardCount
+    || publicControlEvidence(play, hand, level, context)?.unbeatable !== true)) return false;
   // The retained group must actually exist and use no card spent taking over.
   return remaining >= 3 && allPlays.some(exit => exit.cards.length === remaining
     && exit.cards.every(card => !used.has(card.id)));

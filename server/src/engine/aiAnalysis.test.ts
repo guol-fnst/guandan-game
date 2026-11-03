@@ -807,3 +807,30 @@ test('short free-lead probes survive the weakest-card guard but follow economy r
   assert.equal(enforceTeamStrategy(two, plays, hand, null, true, 5, context), eight,
     'reported-next-player defence still runs first');
 });
+
+
+test('team takeover compares a proven own exit with partner progress without sharing hands', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(Rank.BigJoker), ...take(3, 3)];
+  const sixes = take(6, 2);
+  const context = contextFor([hand, [...take(4, 2), sixes[0]],
+    [...take(12, 2), ...take(7, 2), ...take(8)], [sixes[1], ...take(10, 2)]]);
+  context.lastPlayPlayerIndex = 2;
+  const last = generateLegalPlays(take(5), 2)[0];
+  context.actionHistory = context.actionHistory!.filter(a => !a.pattern?.cards.some(c => c.id === last.cards[0].id));
+  context.actionHistory.push({ seatIndex: 2, action: 'play', pattern: last });
+  const all = generateLegalPlays(hand, 2);
+  const joker = all.find(p => p.rank === Rank.BigJoker)!;
+  assert.equal(publicControlEvidence(joker, hand, 2, context)?.unbeatable, true);
+  assert.equal(enforceTeamStrategy(joker, [joker], hand, last, false, 2, context), joker);
+  assert.equal(findBestPlay(hand, last, false, 2, context)?.rank, Rank.BigJoker,
+    'local and final policies agree about the concrete takeover');
+  assert.equal(enforceTeamStrategy(joker, [joker], hand, last, false, 2,
+    { ...context, actionHistory: undefined }), null, 'uncertain control cannot steal the near-finished partner lead');
+  context.players[2].cardCount = 3;
+  assert.equal(enforceTeamStrategy(joker, [joker], hand, last, false, 2, context), null,
+    'do not overtake when partner is already at least as close by public count');
+  context.players[2].cardCount = 2;
+  assert.equal(enforceTeamStrategy(joker, [joker], hand, last, false, 2, context), null);
+});
