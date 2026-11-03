@@ -351,6 +351,12 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.ok(input.played_by_seat.every((player: any) => player.cards.length > 0));
     assert.deepEqual(input.local_analysis.hand_turns, { turns: 1, exact: true });
     assert.equal(input.team_plan.goal, 'finish_self');
+    const route = input.team_routes.find((item: any) => item.goal === 'finish_self');
+    assert.equal(route.action_id, 0);
+    assert.deepEqual(route.remaining_turns, analysis.candidates[analysisKey(plays[0])].remainingTurns);
+    assert.deepEqual(route.continuation, analysis.candidates[analysisKey(plays[0])].continuation);
+    assert.ok(input.team_routes.every((item: any) => Number.isInteger(item.action_id) && item.action_id >= 0));
+
     assert.equal(input.legal_action_member_schema[10], 'analysis');
     assert.equal(input.legal_actions[0][1][0][10].remainingTurns.turns, 0);
     assert.equal(input.candidate_coverage.model_actions, plays.length);
@@ -857,4 +863,20 @@ test('candidate cap retains a low-ranked strategic representative without exceed
   assert.ok(result.plays.includes(plays[0]), 'preserve the local top choice too');
   assert.ok(result.plays.includes(preferred), 'retain the strategic alternative before truncation');
   assert.equal(result.equivalentCounts[result.plays.indexOf(preferred)], 100);
+});
+
+
+test('unmeasured route selection preserves ordering rather than rewarding card count', () => {
+  const hand = rankedHand([3, 3, 3, 7, 8, 9]);
+  const plays = generateLegalPlays(hand, 2);
+  const single = plays.find(p => p.type === PatternType.Single && p.rank === 7)!;
+  const triple = plays.find(p => p.type === PatternType.Triple)!;
+  const context = contextFor([hand, [], [], []]);
+  const routes = buildTeamRoutes(hand, plays, [single, triple], null, 2, context, {});
+  assert.equal(routes.find(r => r.goal === 'finish_self')?.actionKey, analysisKey(single));
+  const measured = buildTeamRoutes(hand, plays, [single, triple], null, 2, context, {
+    [analysisKey(single)]: { remainingTurns: { turns: 3, exact: true } },
+    [analysisKey(triple)]: { remainingTurns: { turns: 2, exact: true } },
+  });
+  assert.equal(measured.find(r => r.goal === 'finish_self')?.actionKey, analysisKey(triple));
 });

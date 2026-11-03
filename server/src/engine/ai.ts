@@ -1088,6 +1088,7 @@ export function finalizeAiDecision(
 
 export interface AiDecisionTrace {
   source: 'primary' | 'backup' | 'local' | 'forced';
+  routes?: string[];
   model?: string;
   corrected: boolean;
 }
@@ -1160,6 +1161,9 @@ export async function findSmartPlay(
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
   const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
+  const routeGoals = (play: CardPattern | null) => (analysis.teamRoutes || [])
+    .filter(route => route.actionKey === (play ? analysisKey(play) : null)).map(route => route.goal);
+
 
   const primary = normalizeAiSelection(
     (selection ?? DEFAULT_AI_SELECTION).provider, (selection ?? DEFAULT_AI_SELECTION).model,
@@ -1195,7 +1199,7 @@ export async function findSmartPlay(
         if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
           onPlan?.(plan);
         }
-        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model,
+        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final),
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
       }
@@ -1205,7 +1209,7 @@ export async function findSmartPlay(
   const final = finalizeAiDecision(
     fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
   );
-  onDecision?.({ source: 'local', corrected:
+  onDecision?.({ source: 'local', routes: routeGoals(final), corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;
 }

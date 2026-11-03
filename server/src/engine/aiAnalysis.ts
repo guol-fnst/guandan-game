@@ -146,9 +146,15 @@ export function buildTeamRoutes(
 ): TeamRoute[] {
   if (!context) return [];
   const routes: TeamRoute[] = [];
-  const self = [...candidates].sort((a, b) =>
-    (estimates[analysisKey(a)]?.remainingTurns.turns ?? hand.length - a.cards.length)
-    - (estimates[analysisKey(b)]?.remainingTurns.turns ?? hand.length - b.cards.length))[0];
+  const self = [...candidates].sort((a, b) => {
+    const left = estimates[analysisKey(a)]?.remainingTurns;
+    const right = estimates[analysisKey(b)]?.remainingTurns;
+    // An unmeasured action is not equivalent to shedding the most cards.
+    // Before analysis, preserve the local ordering; afterwards prefer measured
+    // partitions while retaining their exact/approximate flag for the model.
+    if (!left && !right) return 0;
+    return (left?.turns ?? Infinity) - (right?.turns ?? Infinity);
+  })[0];
   if (self) routes.push({ goal: 'finish_self', actionKey: analysisKey(self), interceptSeats: [],
     reason: '比较自己先走的余牌手数和本方最终名次，不能只看本手出牌数量' });
   const endgames = analyzeEndgameRoutes(hand, allPlays, level, context);
