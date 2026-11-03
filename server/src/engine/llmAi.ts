@@ -235,6 +235,22 @@ function parseModelResponse(content: string): any {
   throw new Error('model response did not contain valid JSON');
 }
 
+export function decodeModelDecision(data: any, count: number, free: boolean):
+  { parsed: any; action: number | 'PASS' } | { failure: string } {
+  const choice = data?.choices?.[0];
+  if (choice?.finish_reason === 'length') return { failure: 'truncated' };
+  const content = choice?.message?.content;
+  if (typeof content !== 'string' || !content.trim()) return { failure: 'empty_content' };
+  let parsed: any;
+  try { parsed = parseModelResponse(content); } catch { return { failure: 'invalid_json' }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { failure: 'invalid_action' };
+  const raw = parsed.action_id ?? parsed.option_id;
+  if (raw === 'PASS') return free ? { failure: 'illegal_pass' } : { parsed, action: 'PASS' };
+  const action = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+  if (!Number.isInteger(action) || action < 0 || action >= count) return { failure: 'invalid_action' };
+  return { parsed, action };
+}
+
 export async function llmFindBestPlay(
   hand: Card[],
   legalPlays: CardPattern[],
@@ -431,36 +447,29 @@ export async function llmFindBestPlay(
       return undefined;
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
+    const decision = decodeModelDecision(data, legalPlays.length, isFreePlay);
+    if ('failure' in decision) {
       recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
+      // Never log response text, prompts or credentials.
+      console.warn('[AI response]', JSON.stringify({
+        provider: normalizedSelection.provider, model: normalizedSelection.model,
+        reason: decision.failure, finishReason: data?.choices?.[0]?.finish_reason,
+        contentLength: data?.choices?.[0]?.message?.content?.length || 0,
+        round: context?.roundNumber, seat: context?.selfSeatIndex,
+        action: context?.actionHistory?.length,
+      }));
       return undefined;
     }
-    const parsed = parseModelResponse(content);
-    const rawActionId = parsed.action_id ?? parsed.option_id;
-    const optionId = typeof rawActionId === 'string' && /^\d+$/.test(rawActionId)
-      ? Number(rawActionId)
-      : rawActionId;
+    const { parsed, action: optionId } = decision;
     const reasonSource = parsed.brief_reason ?? parsed.reason;
     const reason = typeof reasonSource === 'string' ? reasonSource.slice(0, 40) : '未提供理由';
-    if (rawActionId === 'PASS' || optionId === null) {
-      if (isFreePlay) {
-        recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
-        console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] rejected pass during free play; trying next model or local fallback`);
-        return undefined;
-      }
+    if (optionId === 'PASS') {
       const plan = parseStrategyPlan(parsed.strategy_plan);
       if (plan) onPlan?.(plan);
       recordAiModelCall('pass', performance.now() - modelStarted, promptCharacters);
       console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] pass; reason=${reason}`);
       return null;
     }
-    if (!Number.isInteger(optionId) || optionId < 0 || optionId >= legalPlays.length) {
-      recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
-      console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] invalid option=${String(optionId)}; trying next model or local fallback`);
-      return undefined;
-    }
-
     const plan = parseStrategyPlan(parsed.strategy_plan);
     if (plan) onPlan?.(plan);
     recordAiModelCall('success', performance.now() - modelStarted, promptCharacters);

@@ -1050,6 +1050,12 @@ export function finalizeAiDecision(
   return selected;
 }
 
+export interface AiDecisionTrace {
+  source: 'primary' | 'backup' | 'local' | 'forced';
+  model?: string;
+  corrected: boolean;
+}
+
 export async function findSmartPlay(
   hand: Card[],
   lastPattern: CardPattern | null,
@@ -1058,6 +1064,7 @@ export async function findSmartPlay(
   context?: AiDecisionContext,
   selection?: AiModelSelection,
   onPlan?: (plan: AiStrategyPlan) => void,
+  onDecision?: (trace: AiDecisionTrace) => void,
 ): Promise<CardPattern | null> {
   const allPlays = generateLegalPlays(hand, currentLevel);
   const ruleResult = findBestPlay(hand, lastPattern, isFreePlay, currentLevel, context, allPlays);
@@ -1069,6 +1076,7 @@ export async function findSmartPlay(
   // Skip strategic analysis only when there is genuinely no choice. During a
   // follow, PASS is also legal and even one playable bomb is a real decision.
   if (isForcedAiDecision(legalPlays.length, isFreePlay)) {
+    onDecision?.({ source: 'forced', corrected: false });
     return enforceTeamStrategy(
       ruleResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context,
     );
@@ -1147,14 +1155,19 @@ export async function findSmartPlay(
         if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
           onPlan?.(plan);
         }
+        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model,
+          corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
       }
     } catch {}
   }
 
-  return finalizeAiDecision(
+  const final = finalizeAiDecision(
     fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
   );
+  onDecision?.({ source: 'local', corrected:
+    (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
+  return final;
 }
 
 export function isForcedAiDecision(playableCount: number, isFreePlay: boolean): boolean {

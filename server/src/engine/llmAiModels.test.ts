@@ -6,7 +6,7 @@ import {
   isSelectableAiModel,
   LOCAL_AI_MODEL,
   normalizeAiSelection,
-  llmFindBestPlay,
+  llmFindBestPlay, decodeModelDecision,
 } from './llmAi';
 import { generateLegalPlays, findSmartPlay } from './ai';
 import { Rank, Suit } from '../../../shared/types';
@@ -151,4 +151,19 @@ test('model failover precedes local rules and keeps only the successful plan', a
       else process.env[name] = old[i];
     });
   }
+});
+
+
+test('model failures are classified without treating missing actions as PASS', () => {
+  const reply = (content: string, finish_reason = 'stop') => ({ choices: [{ finish_reason, message: { content } }] });
+  for (const [data, failure] of [
+    [reply('{"action_id":0}', 'length'), 'truncated'],
+    [reply(''), 'empty_content'],
+    [reply('{broken'), 'invalid_json'],
+    [reply('{"action_id":99}'), 'invalid_action'],
+    [reply('{"action_id":null}'), 'invalid_action'],
+    [reply('{"action_id":"PASS"}'), 'illegal_pass'],
+  ] as const) assert.deepEqual(decodeModelDecision(data, 1, true), { failure });
+  assert.equal((decodeModelDecision(reply('{"action_id":"PASS"}'), 1, false) as any).action, 'PASS');
+  assert.equal((decodeModelDecision(reply('{"action_id":0}'), 1, true) as any).action, 0);
 });

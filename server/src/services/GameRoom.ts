@@ -7,6 +7,7 @@ import { createDeck, shuffleDeck, dealCards, sortCards, isJoker, effectiveRank }
 import { identifyPattern, isValidPlay, declarePatterns } from '../engine/patterns';
 import { canBeat, canFreePlay, isBombPattern } from '../engine/compare';
 import { getTeam, getLevelDelta, canResistTribute, selectTributeCard, selectReturnTributeCard, isValidReturnTributeCard } from '../engine/rules';
+import type { AiDecisionTrace } from '../engine/ai';
 import { findBestPlay, findSmartPlay, generateLegalPlays } from '../engine/ai';
 import type { AiDecisionContext, AiRecentAction, AiStrategyPlan, AiStrategyMemory } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
@@ -948,6 +949,8 @@ export class GameRoom {
       const expectedRound = this.roundNumber;
       let plan: AiStrategyPlan | undefined;
       let executed = false;
+      let trace: AiDecisionTrace | undefined;
+      const actionIndex = this.publicActionHistory.length;
       const playerIdx = this.state.currentPlayerIndex;
       const player = this.players[playerIdx];
       const hand = this.hands.get(player.id) || [];
@@ -965,6 +968,7 @@ export class GameRoom {
             context,
             this.aiModelSelection,
             value => { plan = value; },
+            value => { trace = value; },
           )
         : findBestPlay(
             hand,
@@ -998,6 +1002,10 @@ export class GameRoom {
           }
         }
       }
+      if (executed && trace) console.info('[AI decision]', JSON.stringify({
+        room: this.id, round: expectedRound, seat: playerIdx, action: actionIndex + 1,
+        ...trace, played: pattern ? `${pattern.type}:${pattern.rank}` : 'PASS',
+      }));
       if (executed && plan && this.roundNumber === expectedRound && this.state?.phase === GamePhase.Playing) {
         this.aiStrategyMemory.set(player.id, {
           ...plan, afterAction: this.publicActionHistory.length,
