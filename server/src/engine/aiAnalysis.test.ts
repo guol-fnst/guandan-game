@@ -541,6 +541,12 @@ test('bomb continuation exposes the lost straight and guards calm waste, but all
   context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 8; });
   const last = generateLegalPlays(rankedHand([Rank.BigJoker]), Rank.Two)[0];
   assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), null);
+  context.players[2].finishRank = 1;
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), null,
+    'a finished partner alone does not justify destroying the exit');
+  context.players[1].cardCount = 5;
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), bomb,
+    'five cards may be a full-house finish, so defence remains available');
   context.players[1].cardCount = 2;
   assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, Rank.Two, context, analysis), bomb);
 });

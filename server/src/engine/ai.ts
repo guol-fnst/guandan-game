@@ -683,8 +683,14 @@ function orderCandidates(
         && exit.cards.every(c => c.id !== card.id))) {
       structureScore = Math.min(0, structureScore) - 240;
     }
+    const after = analysis?.candidates[analysisKey(play)];
+    // Winning a bomb trick is less useful when every remaining lead is small
+    // and fragmented. Keep this finite so urgent defence can still outweigh it.
+    const strandedAfterBomb = !isFreePlay && isBombPattern(play)
+      && after?.continuation?.exact && after.continuation.extraTurns >= 1
+      && after.continuation.largestRemainingGroup <= 2 && after.remainingTurns.turns >= 3 ? 180 : 0;
     scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds, teamPlan)
-      + recaptureBonus(play) + structureScore + looseBonus
+      + recaptureBonus(play) + structureScore + looseBonus - strandedAfterBomb
       + (endgameRoutes[analysisKey(play)]?.score || 0)
       + scoreTeamPlan(play, hand, wholeHandPlays, currentLevel, isFreePlay, teamPlan, context, memory));
   }
@@ -934,8 +940,10 @@ export function enforceTeamStrategy(
     && !materiallyBetterSimulation(proposed, null, analysis)) return null;
   const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
   if (!free && context && isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2
-    && !context.players.some(player => player.finishRank !== null
-      || (player.relation !== 'self' && player.cardCount <= 2))
+    && !catchesOpponent
+    && !context.players.some(player => player.finishRank === null
+      && ((player.relation === 'opponent' && player.cardCount <= 5)
+        || (player.relation === 'partner' && player.cardCount <= 2)))
     && opponentControlStreak(context) < 2
     && !materiallyBetterSimulation(proposed, null, analysis)) return null;
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
