@@ -921,6 +921,17 @@ export function enforceTeamStrategy(
   if (!proposed) {
     return null;
   }
+  // Do not break a ready-to-finish hand merely to win one uncertain trick.
+  // Catch-wind denial and an opponent about to finish remain valid reasons.
+  const leader = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);
+  const catchesOpponent = context && leader?.finishRank != null
+    && context.players.some(p => p.seatIndex === passPosition(context).nextLead && p.relation === 'opponent');
+  const immediateThreat = context?.players.some(p => p.relation === 'opponent'
+    && p.finishRank === null && p.cardCount <= 2);
+  if (!free && context && analysis?.handTurns.exact && analysis.handTurns.turns === 1
+    && !immediateThreat && !catchesOpponent
+    && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
+    && !materiallyBetterSimulation(proposed, null, analysis)) return null;
   const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
   if (!free && context && isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2
     && !context.players.some(player => player.finishRank !== null

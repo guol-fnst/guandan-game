@@ -754,3 +754,33 @@ test('failed-model fallback unloads groups before loose jokers, without disablin
     });
   }
 });
+
+
+test('protect a one-play exit unless interception is urgent or publicly secure', async () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(10, 3), ...take(6, 2)];
+  const all = generateLegalPlays(hand, 5);
+  const ten = all.find(p => p.type === PatternType.Single && p.rank === 10)!;
+  const last = generateLegalPlays(take(7), 5)[0];
+  const context = contextFor([hand, [...take(8), ...take(9), ...take(11)], [], [...take(Rank.BigJoker), ...take(12), ...take(13)]]);
+  context.lastPlayPlayerIndex = 1;
+  context.players[2].finishRank = 1;
+  const analysis = await analyzeDecision(hand, all, [ten], last, 5, undefined, findBestPlay, { budgetMs: 100 });
+  assert.equal(analysis.handTurns.turns, 1);
+  assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, context, analysis), null);
+  context.players[1].cardCount = 1;
+  assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, context, analysis), ten,
+    'do not freeze the whole hand while an opponent is about to finish');
+  context.players[1].cardCount = 0;
+  context.players[1].finishRank = 2;
+  assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, context, analysis), ten,
+    'denying catch-wind is still allowed');
+
+  const safe = contextFor([hand, [...take(8), ...take(9), ...take(2)], [], []]);
+  safe.lastPlayPlayerIndex = 1;
+  safe.players[2].finishRank = 1;
+  safe.players[3].finishRank = 2;
+  assert.equal(publicControlEvidence(ten, hand, 5, safe)?.unbeatable, true);
+  assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, safe, analysis), ten);
+});
