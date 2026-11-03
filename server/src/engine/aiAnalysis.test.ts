@@ -367,8 +367,8 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.ok(input.public_memory.publicly_known_cards.every((p: any) => p.cards === ''));
     assert.equal(input.sampled_hands, undefined);
     assert.equal(requestBody.max_tokens, 512);
-    assert.deepEqual(requestBody.thinking, { type: 'enabled' });
-    assert.equal(requestBody.reasoning_effort, 'low');
+    assert.deepEqual(requestBody.thinking, { type: 'disabled' });
+    assert.equal(requestBody.reasoning_effort, undefined);
     assert.equal(requestBody.temperature, undefined);
     assert.deepEqual(requestBody.response_format, { type: 'json_object' });
     assert.ok(requestBody.messages[0].content.length < 2500);

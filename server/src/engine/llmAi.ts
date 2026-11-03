@@ -426,8 +426,7 @@ export async function llmFindBestPlay(
         max_tokens: normalizedSelection.provider === 'deepseek' ? 512 : 4096,
       };
       if (normalizedSelection.provider === 'deepseek') {
-        requestBody.thinking = { type: 'enabled' };
-        requestBody.reasoning_effort = 'low';
+        requestBody.thinking = { type: 'disabled' };
         requestBody.response_format = { type: 'json_object' };
       } else {
         requestBody.enable_thinking = false;
