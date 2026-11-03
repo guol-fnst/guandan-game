@@ -407,8 +407,11 @@ export async function llmFindBestPlay(
       legalPlays, representedCounts, hand, currentLevel, true, analysis,
     ),
   };
+  const outputFormat = normalizedSelection.provider === 'deepseek'
+    ? '{"action_id":数字或"PASS","brief_reason":"20字内","strategy_plan":{"next":"下一步，32字内","reconsider_when":"放弃条件，32字内"}}'
+    : '{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}';
   const userPrompt = `请根据以下牌桌输入选择动作：\n${JSON.stringify(input)}\n
-只输出JSON：{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}。只有跟牌时可选择PASS。`;
+只输出一个紧凑JSON，按以下顺序给出字段：${outputFormat}。不复述牌桌、候选或推理，不加额外字段或Markdown。只有跟牌时可选择PASS。`;
   const promptCharacters = systemPrompt.length + userPrompt.length;
 
   try {
@@ -423,7 +426,7 @@ export async function llmFindBestPlay(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'deepseek' ? 512 : 4096,
+        max_tokens: normalizedSelection.provider === 'deepseek' ? 1536 : 4096,
       };
       if (normalizedSelection.provider === 'deepseek') {
         requestBody.thinking = { type: 'disabled' };
@@ -462,6 +465,8 @@ export async function llmFindBestPlay(
         provider: normalizedSelection.provider, model: normalizedSelection.model,
         reason: decision.failure, finishReason: data?.choices?.[0]?.finish_reason,
         contentLength: data?.choices?.[0]?.message?.content?.length || 0,
+        completionTokens: data?.usage?.completion_tokens,
+        reasoningTokens: data?.usage?.completion_tokens_details?.reasoning_tokens,
         round: context?.roundNumber, seat: context?.selfSeatIndex,
         action: context?.actionHistory?.length,
       }));

@@ -136,7 +136,9 @@ test('model failover precedes local rules and keeps only the successful plan', a
       assert.equal(requests[0].model, primary.model);
       if (requests.length === 2) {
         assert.equal(requests[1].model, scenario.reverse ? 'deepseek-flash' : LOCAL_AI_MODEL);
-        assert.deepEqual(requests[1].messages, requests[0].messages, 'same state, candidates and memory');
+        assert.equal(requests[1].messages[0].content, requests[0].messages[0].content);
+        assert.deepEqual(JSON.parse(requests[1].messages[1].content.split('\n')[1]),
+          JSON.parse(requests[0].messages[1].content.split('\n')[1]), 'same state, candidates and memory');
       }
       const successful = scenario.primary === 'valid' || scenario.primary === 'pass'
         || scenario.backup === 'valid';
