@@ -38,6 +38,7 @@ test('DeepSeek exposes queried non-Pro models and rejects Pro models', () => {
   assert.deepEqual(normalizeAiSelection('deepseek', undefined), {
     provider: 'deepseek', model: 'deepseek-v4-flash',
   });
+  assert.deepEqual(DEFAULT_AI_SELECTION, { provider: 'local', model: LOCAL_AI_MODEL });
   assert.deepEqual(normalizeAiSelection(undefined, undefined), DEFAULT_AI_SELECTION);
   assert.deepEqual(normalizeAiSelection('local', undefined), { provider: 'local', model: LOCAL_AI_MODEL });
 });

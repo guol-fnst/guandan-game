@@ -6,12 +6,12 @@ import { recordAiModelCall } from './aiTelemetry';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const LOCAL_BASE_URL = 'https://fueternal.com/api/v1';
+export const LOCAL_AI_MODEL = 'Qwen3.8-27';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
-  provider: 'deepseek',
-  model: 'deepseek-v4-flash',
+  provider: 'local',
+  model: LOCAL_AI_MODEL,
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
-export const LOCAL_AI_MODEL = 'Qwen3.8-27';
 
 interface ProviderConfig {
   baseUrl: string;
