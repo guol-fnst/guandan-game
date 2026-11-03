@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
 import { createDeck } from './card';
-import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision } from './ai';
+import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
@@ -148,6 +148,10 @@ test('short hand probes with a recapture and exit, but never feeds a reported si
   const uncertain = analyzeEndgameRoutes(hand, plays, Rank.Two, noMemory)[analysisKey(probe)];
   assert.equal(uncertain.controlProven, false);
   assert.match(uncertain.caveat, /可能/);
+  const options = buildTeamRoutes(hand, plays, plays, null, Rank.Two, noMemory, {}, generateLegalPlays);
+  const planned = options.find(r => r.goal === 'probe_then_recapture')!;
+  assert.equal(planned.controlProven, false);
+  assert.ok(planned.recapture);
 });
 
 test('proven control followed by a whole-hand exit takes priority in the endgame', () => {
@@ -163,6 +167,11 @@ test('proven control followed by a whole-hand exit takes priority in the endgame
   const route = analyzeEndgameRoutes(hand, plays, Rank.Two, context)[analysisKey(play)];
   assert.equal(route.intent, 'control_then_finish');
   assert.equal(route.exit?.type, PatternType.Pair);
+  const team = buildTeamRoutes(hand, plays, plays, null, Rank.Two, context, {}, generateLegalPlays);
+  const control = team.find(r => r.goal === 'control_then_finish')!;
+  assert.equal(control.actionKey, analysisKey(play));
+  assert.deepEqual(control.exit, route.exit);
+  assert.equal(control.controlProven, true);
 });
 
 test('four lucky simulations do not authorize overtaking partner; substantial paired evidence can', () => {
@@ -833,4 +842,19 @@ test('team takeover compares a proven own exit with partner progress without sha
     'do not overtake when partner is already at least as close by public count');
   context.players[2].cardCount = 2;
   assert.equal(enforceTeamStrategy(joker, [joker], hand, last, false, 2, context), null);
+});
+
+
+test('candidate cap retains a low-ranked strategic representative without exceeding the limit', () => {
+  const plays: CardPattern[] = Array.from({ length: 100 }, (_, id) => ({
+    type: PatternType.Single, rank: Rank.Three, length: 1,
+    cards: [{ id, rank: Rank.Three, suit: Suit.Spade }],
+  }));
+  const preferred = plays[99];
+  const compressed = { plays, equivalentCounts: plays.map((_, i) => i + 1) };
+  const result = limitModelCandidates(compressed, 12, new Set([analysisKey(preferred)]));
+  assert.equal(result.plays.length, 12);
+  assert.ok(result.plays.includes(plays[0]), 'preserve the local top choice too');
+  assert.ok(result.plays.includes(preferred), 'retain the strategic alternative before truncation');
+  assert.equal(result.equivalentCounts[result.plays.indexOf(preferred)], 100);
 });

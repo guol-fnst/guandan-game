@@ -126,9 +126,12 @@ export function buildTeamPlan(
 }
 
 export interface TeamRoute {
-  goal: 'finish_self' | 'feed_partner' | 'takeover_change' | 'hold_control';
+  goal: 'finish_self' | 'feed_partner' | 'takeover_change' | 'hold_control' | 'probe_then_recapture' | 'control_then_finish';
   actionKey: string | null;
   nextLead?: { type: PatternType; rank: Rank; length: number };
+  recapture?: EndgameRoute['recapture'];
+  exit?: EndgameRoute['exit'];
+  controlProven?: boolean;
   interceptSeats: number[];
   reason: string;
   simulation?: SampleResult;
@@ -148,6 +151,17 @@ export function buildTeamRoutes(
     - (estimates[analysisKey(b)]?.remainingTurns.turns ?? hand.length - b.cards.length))[0];
   if (self) routes.push({ goal: 'finish_self', actionKey: analysisKey(self), interceptSeats: [],
     reason: '比较自己先走的余牌手数和本方最终名次，不能只看本手出牌数量' });
+  const endgames = analyzeEndgameRoutes(hand, allPlays, level, context);
+  const intents = new Set<string>();
+  for (const play of [...candidates].filter(p => endgames[analysisKey(p)])
+    .sort((a, b) => endgames[analysisKey(b)].score - endgames[analysisKey(a)].score)) {
+    const route = endgames[analysisKey(play)];
+    if (intents.has(route.intent)) continue;
+    intents.add(route.intent);
+    routes.push({ goal: route.intent, actionKey: analysisKey(play),
+      recapture: route.recapture, exit: route.exit, controlProven: route.controlProven,
+      interceptSeats: [], reason: route.caveat });
+  }
   const partner = context.players.find(p => p.relation === 'partner' && p.finishRank === null);
   if (partner && partner.cardCount <= 5) {
     const memory = buildPublicKnowledge(hand, context);
@@ -688,9 +702,8 @@ export async function analyzeDecision(
     simulation: { status: 'not_endgame', samples: 0, elapsedMs: 0 },
   };
   const routes = analyzeEndgameRoutes(hand, allPlays, level, context);
-  for (const [index, play] of candidates.entries()) {
+  const estimateCandidate = (play: CardPattern) => {
     const endgameRoute = routes[analysisKey(play)];
-    if (index >= 40 && !endgameRoute) continue;
     const remainingTurns = estimator.after(play);
     const used = new Set(play.cards.map(card => card.id));
     analysis.candidates[analysisKey(play)] = { remainingTurns, endgameRoute,
@@ -698,7 +711,9 @@ export async function analyzeDecision(
         exact: remainingTurns.exact && analysis.handTurns.exact,
         largestRemainingGroup: Math.max(0, ...allPlays.filter(group =>
           group.cards.every(card => !used.has(card.id))).map(group => group.cards.length)) } };
-
+  };
+  for (const [index, play] of candidates.entries()) {
+    if (index < 40 || routes[analysisKey(play)]) estimateCandidate(play);
   }
   analysis.seatBeliefs = context
     ? inferSeatBeliefs(hand, context, level, Math.min(deadline, start + 140), options.random) : [];
@@ -710,6 +725,12 @@ export async function analyzeDecision(
   }
   analysis.teamRoutes = buildTeamRoutes(hand, allPlays, candidates, last, level, context,
     analysis.candidates, options.generateReplies);
+  // Every advertised route gets the same structural evidence, even if its
+  // representative lies beyond the first forty heuristic candidates.
+  for (const route of analysis.teamRoutes) {
+    const play = candidates.find(p => analysisKey(p) === route.actionKey);
+    if (play && !analysis.candidates[route.actionKey!]) estimateCandidate(play);
+  }
   const finish = () => {
     for (const route of analysis.teamRoutes || []) route.simulation = route.actionKey
       ? analysis.candidates[route.actionKey]?.simulation : analysis.passSimulation;

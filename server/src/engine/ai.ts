@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
@@ -509,6 +509,7 @@ const MODEL_ACTION_LIMIT = 96;
  * from every pattern type before taking deeper alternatives. */
 export function limitModelCandidates(
   compressed: CompressedAiCandidates, limit = MODEL_ACTION_LIMIT,
+  preferredKeys: ReadonlySet<string> = new Set(),
 ): CompressedAiCandidates {
   if (compressed.plays.length <= limit) return compressed;
   const buckets = new Map<PatternType, number[]>();
@@ -518,6 +519,10 @@ export function limitModelCandidates(
     buckets.set(play.type, bucket);
   });
   const selected = new Set<number>([0]);
+  for (const [index, play] of compressed.plays.entries()) {
+    if (selected.size >= limit) break;
+    if (preferredKeys.has(analysisKey(play))) selected.add(index);
+  }
   for (let row = 0; selected.size < limit; row++) {
     let added = false;
     for (const bucket of buckets.values()) {
@@ -1122,10 +1127,14 @@ export async function findSmartPlay(
   // The hint system keeps every physical action. The model sees every distinct
   // declared strategy, with equivalent deck-copy/suit choices compressed.
   const completeLegalPlays = legalPlays;
-  const compressed = limitModelCandidates(compressCandidatesForModel(
+  const completeCompressed = compressCandidatesForModel(
     orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays),
     currentLevel,
-  ));
+  );
+  const routeKeys = new Set(buildTeamRoutes(hand, allPlays, completeCompressed.plays,
+    isFreePlay ? null : lastPattern, currentLevel, context, {}, generateLegalPlays)
+    .flatMap(route => route.actionKey ? [route.actionKey] : []));
+  const compressed = limitModelCandidates(completeCompressed, MODEL_ACTION_LIMIT, routeKeys);
   legalPlays = retainNextPlayerReportMaximum(
     compressed.plays, completeLegalPlays, currentLevel, context,
   );
