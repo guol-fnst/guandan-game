@@ -11,9 +11,8 @@ export const DEFAULT_AI_SELECTION: AiModelSelection = {
   model: 'deepseek-v4-flash',
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
-// Thinking and the final JSON share this budget. 512 tokens can be consumed
-// entirely by reasoning, leaving an empty answer. The request deadline still
-// bounds latency; this is an upper limit, not a target output length.
+// Keep room for complete JSON; this is a ceiling, not a target length.
+// Thinking is explicitly disabled below to reduce per-turn latency.
 const DEEPSEEK_MAX_OUTPUT_TOKENS = 4096;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
 
@@ -375,8 +374,7 @@ export async function llmFindBestPlay(
         max_tokens: normalizedSelection.provider === 'deepseek' ? DEEPSEEK_MAX_OUTPUT_TOKENS : 192,
       };
       if (normalizedSelection.provider === 'deepseek') {
-        requestBody.thinking = { type: 'enabled' };
-        requestBody.reasoning_effort = 'low';
+        requestBody.thinking = { type: 'disabled' };
         requestBody.response_format = { type: 'json_object' };
       } else {
         requestBody.temperature = stage === '残局' ? 0 : 0.25;
