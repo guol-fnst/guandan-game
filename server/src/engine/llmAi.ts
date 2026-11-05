@@ -11,6 +11,10 @@ export const DEFAULT_AI_SELECTION: AiModelSelection = {
   model: 'deepseek-v4-flash',
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
+// Thinking and the final JSON share this budget. 512 tokens can be consumed
+// entirely by reasoning, leaving an empty answer. The request deadline still
+// bounds latency; this is an upper limit, not a target output length.
+const DEEPSEEK_MAX_OUTPUT_TOKENS = 4096;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
 
 interface ProviderConfig {
@@ -368,7 +372,7 @@ export async function llmFindBestPlay(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'deepseek' ? 512 : 192,
+        max_tokens: normalizedSelection.provider === 'deepseek' ? DEEPSEEK_MAX_OUTPUT_TOKENS : 192,
       };
       if (normalizedSelection.provider === 'deepseek') {
         requestBody.thinking = { type: 'enabled' };
@@ -398,9 +402,25 @@ export async function llmFindBestPlay(
       return undefined;
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content;
+    // Record diagnostics without storing prompts, cards or reasoning text.
+    console.info('[LLM AI response]', JSON.stringify({
+      provider: normalizedSelection.provider,
+      model: normalizedSelection.model,
+      finishReason: choice?.finish_reason ?? null,
+      promptTokens: data.usage?.prompt_tokens ?? null,
+      completionTokens: data.usage?.completion_tokens ?? null,
+      reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+      contentLength: typeof content === 'string' ? content.length : 0,
+      reasoningLength: typeof choice?.message?.reasoning_content === 'string'
+        ? choice.message.reasoning_content.length : 0,
+      elapsedMs: Math.round(performance.now() - modelStarted),
+    }));
+    if (choice?.finish_reason === 'length' || typeof content !== 'string' || !content.trim()) {
       recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
+      const cause = choice?.finish_reason === 'length' ? 'output_token_limit' : 'empty_content';
+      console.warn(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] ${cause}; using rule-based AI`);
       return undefined;
     }
     const parsed = parseModelResponse(content);
