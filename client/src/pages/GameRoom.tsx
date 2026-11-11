@@ -9,7 +9,6 @@ import PlayArea, { PlayerAction } from '../components/PlayArea';
 
 import SpectatorHand from '../components/SpectatorHand';
 import CardComponent from '../components/CardComponent';
-import './GameRoom.mobile.css';
 
 export default function GameRoom() {
   const patternName = (type: string) => ({ single: '单张', pair: '对子', triple: '三张', triple_pair: '三带二', straight: '顺子', consecutive_pair: '三连对', plane: '二连三', flush_straight: '同花顺', king_bomb: '四王炸' }[type] || type.replace('bomb', '炸弹·'));
