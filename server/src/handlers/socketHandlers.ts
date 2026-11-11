@@ -192,7 +192,8 @@ export function setupSocketHandlers(io: Server) {
         socket.emit('error', { message: '房间不存在' });
         return;
       }
-      if (room.password && room.password !== (data.password || '')) {
+      const isCurrentSpectator = socket.currentRoomId === room.id && room.hasSpectator(socket.userId);
+      if (!isCurrentSpectator && room.password && room.password !== (data.password || '')) {
         socket.emit('error', { message: '房间密码错误' });
         return;
       }

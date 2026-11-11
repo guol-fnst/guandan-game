@@ -62,8 +62,6 @@ export default function GameRoom() {
     const socket = getSocket();
     if (!socket) return;
 
-    socket.emit(spectatorMode ? 'join_spectator' : 'join_room', { roomId });
-
     const onGameState = (state: GameState) => {
       setGameState(state);
       setDeclarations([]);
@@ -169,6 +167,9 @@ export default function GameRoom() {
       navigate('/lobby');
     };
     socket.on('spectator_removed', onSpectatorRemoved);
+
+    // Subscribe before requesting the snapshot, including on spectator entry.
+    socket.emit(spectatorMode ? 'join_spectator' : 'join_room', { roomId });
 
     return () => {
       socket.off('game_state', onGameState);
