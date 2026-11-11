@@ -1003,21 +1003,33 @@ export class GameRoom {
   }
 
   private handleTimeout() {
-    if (!this.state) return;
+    if (!this.state || this.state.phase !== GamePhase.Playing) return;
     const player = this.players[this.state.currentPlayerIndex];
+    if (!player) return;
+    const expiredDeadline = this.state.actionDeadline;
+    let result: { success: boolean; error?: string };
     if (!this.state.lastPlay) {
       const hand = this.hands.get(player.id) || [];
-      const fallback = findBestPlay(
-        hand, null, true, this.state.currentLevel,
-        this.getAiDecisionContext(this.state.currentPlayerIndex),
-      );
-      if (fallback) {
-        this.playCards(player.id, fallback.cards, { type: fallback.type, rank: fallback.rank });
+      // The watchdog must finish immediately and must not depend on strategy
+      // enumeration or a generated declaration being accepted. Any single is
+      // legal when leading, including the level's heart wildcard.
+      const card = [...hand].sort((a, b) =>
+        effectiveRank(a.rank, this.state!.currentLevel) - effectiveRank(b.rank, this.state!.currentLevel)
+        || a.id - b.id
+      )[0];
+      if (!card) {
+        console.error('[turn timeout] active player has no cards', { roomId: this.id, playerId: player.id });
+        return;
       }
-      else this.handlePass(player.id);
+      result = this.playCards(player.id, [card]);
     } else {
-      this.handlePass(player.id);
+      result = this.handlePass(player.id);
     }
+    console[result.success ? 'info' : 'error']('[turn timeout]', {
+      roomId: this.id, playerId: player.id, expiredDeadline,
+      success: result.success, error: result.error,
+      nextPlayerIndex: this.state.currentPlayerIndex,
+    });
   }
 
   private updatePlayerCardCount() {
