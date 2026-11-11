@@ -1,6 +1,4 @@
-import React from 'react';
-import { PlayerInfo as PlayerInfoType, Card } from '../sharedTypes';
-import CardComponent from './CardComponent';
+import { PlayerInfo as PlayerInfoType } from '../sharedTypes';
 
 interface Props {
   player: PlayerInfoType;
@@ -8,6 +6,7 @@ interface Props {
   isCurrent: boolean;
   isMe: boolean;
   isPartner: boolean;
+  secondsLeft?: number | null;
 }
 
 const TEAM_COLORS = {
@@ -16,11 +15,11 @@ const TEAM_COLORS = {
   opponent: '#e74c3c',
 };
 
-export default function PlayerInfoComponent({ player, position, isCurrent, isMe, isPartner }: Props) {
+export default function PlayerInfoComponent({ player, position, isCurrent, isMe, isPartner, secondsLeft }: Props) {
   const bgColor = isMe ? TEAM_COLORS.mine : isPartner ? TEAM_COLORS.partner : TEAM_COLORS.opponent;
 
   return (
-    <div className={`player-info${isCurrent ? ' is-current' : ''}`} style={{
+    <div className={`player-info player-info--${position}${isCurrent ? ' is-current' : ''}${isCurrent && secondsLeft != null && secondsLeft <= 10 ? ' is-urgent' : ''}`} data-seconds-left={isCurrent ? secondsLeft ?? undefined : undefined} style={{
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',

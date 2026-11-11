@@ -9,6 +9,7 @@ import PlayArea, { PlayerAction } from '../components/PlayArea';
 
 import SpectatorHand from '../components/SpectatorHand';
 import CardComponent from '../components/CardComponent';
+import './GameRoom.mobile.css';
 
 export default function GameRoom() {
   const patternName = (type: string) => ({ single: '单张', pair: '对子', triple: '三张', triple_pair: '三带二', straight: '顺子', consecutive_pair: '三连对', plane: '二连三', flush_straight: '同花顺', king_bomb: '四王炸' }[type] || type.replace('bomb', '炸弹·'));
@@ -31,6 +32,7 @@ export default function GameRoom() {
   const [tributeNotice, setTributeNotice] = useState('');
   const [declarations, setDeclarations] = useState<CardPattern[]>([]);
   const [spectatorDialogOpen, setSpectatorDialogOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
   const [actionSecondsLeft, setActionSecondsLeft] = useState<number | null>(null);
 
@@ -326,7 +328,16 @@ export default function GameRoom() {
             </div>
           )}
         </div>
+        <div className="table-watermark" aria-hidden="true"><strong>掼蛋</strong><span>默契配合 · 好牌同享</span></div>
         <div className="game-top-actions">
+          <div className="mobile-room-menu">
+            <button className="mobile-menu-toggle" aria-expanded={mobileMenuOpen} aria-controls="mobile-room-options" onClick={() => setMobileMenuOpen(value => !value)}>☰ <span>更多</span></button>
+            {mobileMenuOpen && <div id="mobile-room-options" className="mobile-menu-options">
+              <button onClick={() => { setSpectatorDialogOpen(true); setMobileMenuOpen(false); }}>观战 {gameState?.spectators.length || 0}</button>
+              <button onClick={handleLeaveRoom}>退出房间</button>
+              <button onClick={handleLogout}>退出登录</button>
+            </div>}
+          </div>
           {!isSpectator && gameState?.phase !== 'round_end' && (
             <div className={`game-turn-status${isMyTurn ? ' is-my-turn' : ''}${gameState?.phase === 'return_tribute' ? ' is-tribute' : ''}${errorMsg ? ' has-error' : ''}`}>
               <span className="game-turn-message">{turnMessage}</span>
@@ -342,14 +353,14 @@ export default function GameRoom() {
               onClick={handleLeaveRoom}
             >
               <span className="desktop-action-label">退出房间</span>
-              <span className="mobile-action-label">Exit</span>
+              <span className="mobile-action-label">退出房间</span>
             </button>
             <button
               className="btn-secondary"
               onClick={handleLogout}
             >
               <span className="desktop-action-label">退出登录</span>
-              <span className="mobile-action-label">Logout</span>
+              <span className="mobile-action-label">退出登录</span>
             </button>
           </div>
         </div>
@@ -361,6 +372,7 @@ export default function GameRoom() {
             <PlayerInfoComponent
               player={getPlayerForPosition(2)!}
               position="top"
+              secondsLeft={actionSecondsLeft}
               isCurrent={gameState?.currentPlayerIndex === (displaySeatIndex + 2) % 4}
               isMe={!isSpectator && getPlayerForPosition(2)!.id === userId}
               isPartner={!isSpectator && getPlayerForPosition(2)!.id !== userId}
@@ -374,6 +386,7 @@ export default function GameRoom() {
             <PlayerInfoComponent
               player={getPlayerForPosition(3)!}
               position="left"
+              secondsLeft={actionSecondsLeft}
               isCurrent={gameState?.currentPlayerIndex === (displaySeatIndex + 3) % 4}
               isMe={getPlayerForPosition(3)!.id === userId}
               isPartner={false}
@@ -387,6 +400,7 @@ export default function GameRoom() {
             <PlayerInfoComponent
               player={getPlayerForPosition(1)!}
               position="right"
+              secondsLeft={actionSecondsLeft}
               isCurrent={gameState?.currentPlayerIndex === (displaySeatIndex + 1) % 4}
               isMe={getPlayerForPosition(1)!.id === userId}
               isPartner={false}
@@ -425,6 +439,7 @@ export default function GameRoom() {
             <PlayerInfoComponent
               player={getPlayerForPosition(0)!}
               position="bottom"
+              secondsLeft={actionSecondsLeft}
               isCurrent={gameState?.currentPlayerIndex === displaySeatIndex}
               isMe={!isSpectator}
               isPartner={false}
@@ -524,9 +539,9 @@ export default function GameRoom() {
               ) : (
                 <>
                   <button
-                    className="btn-primary"
+                    className="btn-primary play-action"
                     onClick={handlePlay}
-                    disabled={!isMyTurn}
+                    disabled={!isMyTurn || selectedCardIds.size === 0}
                     style={{
                       opacity: isMyTurn ? 1 : 0.4,
                       padding: '8px 24px',
@@ -537,7 +552,7 @@ export default function GameRoom() {
                     出牌<span className="play-card-count"> ({selectedCardIds.size}张)</span>
                   </button>
                   <button
-                    className="btn-secondary"
+                    className="btn-secondary hint-action"
                     onClick={() => { getSocket()?.emit('hint', { currentCardIds: [...selectedCardIds] }); }}
                     disabled={!isMyTurn}
                     style={{
@@ -552,7 +567,7 @@ export default function GameRoom() {
                     提示
                   </button>
                   <button
-                    className="btn-secondary"
+                    className="btn-secondary pass-action"
                     onClick={handlePass}
                     disabled={!isMyTurn || !gameState?.lastPlay}
                     style={{

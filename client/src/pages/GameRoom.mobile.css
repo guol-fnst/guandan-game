@@ -1,0 +1,109 @@
+.table-watermark, .mobile-room-menu { display: none; }
+
+/* Landscape phones: a compact header, four seats and a full-width hand.
+   Keep these rules separate from the established portrait and desktop layouts. */
+@media (orientation: landscape) and (max-height: 650px) and (max-width: 1200px) {
+  .game-room .game-table {
+    --game-card-width: clamp(34px, 4.8vw, 54px);
+    --game-card-height: clamp(48px, 12.5dvh, 76px);
+    --game-card-rank-size: clamp(20px, 3vw, 30px);
+    --game-card-suit-size: clamp(14px, 2vw, 20px);
+    --game-card-center-size: clamp(24px, 3.5vw, 36px);
+    background:
+      radial-gradient(ellipse at 50% 40%, #199c8d66, transparent 65%),
+      repeating-linear-gradient(35deg, #ffffff03 0 1px, transparent 1px 4px),
+      linear-gradient(120deg, #075d55, #087e71 50%, #064c44);
+    isolation: isolate;
+  }
+  .game-room .game-table::after {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: auto -6% -19% -6%;
+    height: 32%;
+    border-radius: 50% 50% 0 0;
+    border-top: 5px solid #a27b5470;
+    background: linear-gradient(#342d34, #171e29);
+    box-shadow: 0 -3px 14px #002f2b80;
+    pointer-events: none;
+  }
+  .game-room .duel-scoreboard {
+    top: 7px; left: 58px; min-width: 122px; padding: 4px 6px;
+    border-color: #ffffff24; background: #003c38aa; border-radius: 8px;
+  }
+  .game-room .duel-score-team { font-size: 10px; }
+  .game-room .duel-score-team strong { font-size: 24px; }
+  .game-room .duel-score-meta { font-size: 9px; }
+  .game-room .duel-turn-countdown { display: none; }
+  .mobile-room-menu { display: block; position: absolute; top: 7px; left: 7px; z-index: 60; }
+  .mobile-menu-toggle { min-width: 42px; min-height: 44px; padding: 0; background: #003c3866; color: #fff; font-size: 22px; }
+  .mobile-menu-toggle span { display: block; font-size: 10px; }
+  .mobile-menu-options { position: absolute; top: 50px; left: 0; width: 136px; padding: 5px; border: 1px solid #ffffff30; border-radius: 10px; background: #063d39; box-shadow: 0 8px 24px #001b26aa; }
+  .mobile-menu-options button { display: block; width: 100%; min-height: 44px; padding: 8px; color: #fff; background: transparent; text-align: left; }
+  .game-room .room-exit-actions { display: none; }
+  .game-room .spectator-menu { top: 8px; right: 10px; min-height: 36px; padding: 6px 12px; border-radius: 20px; background: #003c3877; font-size: 11px; }
+  .table-watermark { position: absolute; top: 31%; left: 50%; transform: translateX(-50%); display: flex; align-items: center; flex-direction: column; gap: 3px; color: #003c3b; opacity: .3; pointer-events: none; }
+  .table-watermark strong { font-size: 38px; letter-spacing: .16em; }
+  .table-watermark span { font-size: 10px; letter-spacing: .2em; }
+  .game-room .player-seat--top { top: 6px; left: 50%; }
+  .game-room .player-seat--left, .game-room .player-seat--right { top: 27%; }
+  .game-room .player-seat--left { left: 12px; }
+  .game-room .player-seat--right { right: 12px; }
+  .game-room .player-info { position: relative; width: 86px; max-width: 86px; min-width: 0 !important; padding: 5px 6px !important; gap: 2px !important; border-radius: 8px !important; background: #003e3a60 !important; border: 1px solid #ffffff25 !important; }
+  .game-room .player-info.is-current { border-color: #ffdd69 !important; box-shadow: 0 0 0 2px #ffd45e40, 0 0 16px #ffd45e33; }
+  .game-room .player-info > div > div { width: 27px !important; height: 27px !important; border-radius: 6px !important; }
+  .game-room .player-info > div > span { color: #bde6ff !important; font-size: 10px !important; }
+  .game-room .player-info--left > div > span, .game-room .player-info--right > div > span { color: #ffb4a4 !important; }
+  .game-room .player-info > span:nth-last-child(2) { max-width: 100%; font-size: 12px !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .game-room .player-info > span:last-child { font-size: 9px !important; color: #cee5de !important; white-space: nowrap; }
+  .game-room .player-info--top { width: 130px; max-width: 130px; display: grid !important; grid-template-columns: auto 1fr; column-gap: 6px !important; }
+  .game-room .player-info--top > div { grid-row: 1 / 3; flex-direction: column; gap: 2px !important; }
+  .game-room .player-info[data-seconds-left]::after { content: attr(data-seconds-left); position: absolute; right: -41px; top: 12px; display: grid; place-items: center; width: 34px; height: 34px; border: 2px solid #ffdf83; border-radius: 50%; background: linear-gradient(#805e2b, #4c381e); color: #fff3bf; font-size: 18px; font-weight: 800; box-shadow: 0 2px 8px #002f2baa; }
+  .game-room .player-info--right[data-seconds-left]::after { right: auto; left: -41px; }
+  .game-room .player-info.is-urgent::after { background: #a43628; color: #fff; }
+  .game-room .played-zone { padding-top: 0; max-width: 28%; overflow: auto; }
+  .game-room .played-zone--top { top: 19%; left: 50%; }
+  .game-room .played-zone--left { top: 29%; left: 18%; }
+  .game-room .played-zone--right { top: 29%; right: 18%; }
+  .game-room .seat-action-pass { min-width: 0; font-size: 23px; }
+  .game-room:not(.is-waiting) .game-center-play-area.is-personal-play-area { top: 42% !important; left: 50%; max-width: 38%; }
+  .game-room .game-turn-status { top: 9px !important; left: auto; right: 92px; max-width: 24%; min-height: 30px; padding: 4px 8px; font-size: 10px; background: #003c3877; }
+  .game-room .game-turn-status:not(.has-error):not(.is-tribute) { display: none; }
+  .game-room:not(.is-spectator) .game-bottom-area { left: 10%; right: 10%; bottom: 9%; padding: 0; z-index: 30; }
+  .game-room .game-action-bar { order: 0; position: fixed; top: 36%; left: 25%; right: 25%; margin: 0; }
+  .game-room .game-play-actions { gap: 12px; }
+  .game-room .game-play-actions button { min-height: 40px; padding: 6px 20px !important; min-width: 88px; border-radius: 24px; font-size: 18px !important; font-weight: 800; box-shadow: inset 0 2px 1px #ffffff80, 0 3px 0 #003d5755, 0 4px 8px #00352b55; }
+  .game-room .pass-action { order: 0; }
+  .game-room .hint-action { order: 1; }
+  .game-room .play-action { order: 2; }
+  .game-room .pass-action, .game-room .hint-action { color: #fff !important; background: linear-gradient(#80d9ff, #6774ef) !important; border: 1px solid #b7e8ff !important; }
+  .game-room .play-action { color: #8b3c08; background: linear-gradient(#ffe965, #ffac27); border: 1px solid #ffe979; }
+  .game-room .game-play-actions button:disabled { opacity: .45 !important; box-shadow: none; }
+  .game-room .play-card-count { font-size: 10px; }
+  .game-room .hand-scroll { order: 1; max-height: none; overflow: visible; padding: 0; }
+  .game-room .hand-cards {
+    --hand-card-width: clamp(42px, 6.4vw, 76px);
+    --hand-card-height: clamp(66px, 20dvh, 108px);
+    --hand-card-rank-size: clamp(25px, 4vw, 42px);
+    --hand-card-suit-size: clamp(17px, 2.4vw, 25px);
+    --hand-card-center-size: clamp(32px, 4.7vw, 48px);
+    --hand-column-step: calc((80vw - var(--hand-card-width)) / max(1, var(--hand-group-count) - 1));
+    --hand-column-min: 0px;
+    --hand-stack-rise: min(6dvh, calc(22dvh / var(--hand-stack-count)));
+    width: 100%; min-width: 0; justify-content: center; padding: 0; margin: 0;
+  }
+  .game-room .hand-card-group { flex-shrink: 1; }
+  .game-room .hand-card-slot.is-stacked .card-rank { font-size: min(var(--hand-card-rank-size), calc(var(--hand-stack-rise) * .85)) !important; }
+  .game-room .hand-card-slot.is-stacked .card-corner-suit { font-size: min(var(--hand-card-suit-size), calc(var(--hand-stack-rise) * .65)) !important; }
+  .game-room .hand-card-slot.is-stacked .card-corner--hand { top: 1px; }
+  .game-room .playing-card--hand { border-radius: 5px; }
+  .game-room .playing-card.is-selected { transform: translateY(-9px); border-color: #ffc928; box-shadow: 0 0 0 2px #ffc928, 0 3px 8px #00332980; }
+  .game-room .level-card-badge { left: auto; right: 1px; top: auto; bottom: 3px; writing-mode: horizontal-tb; font-size: 9px; padding: 1px 3px; border-width: 1px; }
+  .game-room .self-player-seat { top: auto; bottom: 1%; left: 12px; z-index: 35; }
+  .game-room .self-player-seat .player-info { display: flex; flex-direction: row; width: auto; max-width: 160px; padding: 3px 6px !important; gap: 6px !important; background: transparent !important; border-color: transparent !important; }
+  .game-room .self-player-seat .player-info > div > span, .game-room .self-player-seat .player-info > span:last-child { display: none; }
+  .game-room .self-player-seat .player-info[data-seconds-left]::after { top: -38px; left: 0; right: auto; }
+  .game-room .tribute-panel { max-height: 23dvh; }
+  .game-room.is-waiting .table-watermark { display: none; }
+  .game-room.is-waiting .game-center-play-area { top: 53%; }
+}

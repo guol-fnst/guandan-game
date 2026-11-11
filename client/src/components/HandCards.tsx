@@ -67,6 +67,8 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
       className="hand-cards"
       style={{
         height: stackHeight,
+        '--hand-group-count': groups.length,
+        '--hand-stack-count': Math.max(1, maxStack - 1),
         ...(groupBySuit ? { '--hand-stack-rise': `${compactStackRise}px` } : {}),
       } as React.CSSProperties}
       aria-label={`手牌，共 ${cards.length} 张`}
@@ -89,7 +91,7 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
             const selected = selectedIds.has(card.id);
             return (
               <div
-                className="hand-card-slot"
+                className={`hand-card-slot${cardIndex > 0 ? ' is-stacked' : ''}`}
                 key={card.id}
                 style={{
                   bottom: stackOffset(cardIndex),
