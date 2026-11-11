@@ -39,22 +39,12 @@ body {
   flex-direction: column;
 }
 
-/* Felt table with a restrained wood rail, inspired by a physical card table. */
-.game-room {
-  padding: clamp(6px, 1.1vw, 18px);
-}
-
-.game-room > div {
-  border: clamp(7px, .85vw, 14px) solid #4c2c1b;
-  border-radius: clamp(16px, 2vw, 28px);
+/* Edge-to-edge felt keeps the full table area available for play. */
+.game-table {
   background:
     radial-gradient(ellipse at 50% 46%, rgba(29, 126, 83, .4), transparent 58%),
     repeating-linear-gradient(25deg, rgba(255,255,255,.012) 0 1px, transparent 1px 5px),
     linear-gradient(135deg, #064c32 0%, #075f3d 48%, #033b26 100%);
-  box-shadow:
-    inset 0 0 0 2px rgba(245, 197, 113, .16),
-    inset 0 0 42px rgba(0, 0, 0, .34),
-    0 10px 26px rgba(0, 0, 0, .45);
 }
 
 .duel-scoreboard {
@@ -893,7 +883,7 @@ body, #root { min-height: 100dvh; height: 100dvh; }
 body { overflow: auto; }
 button, summary, [role="button"] { touch-action: manipulation; }
 button:disabled { cursor: default; }
-.game-room { height: 100dvh !important; padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); }
+.game-room { height: 100dvh !important; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 .player-seat { position: absolute; z-index: 12; }
 .player-seat--top { top: 8%; left: 50%; transform: translateX(-50%); }
 .player-seat--left { top: 40%; left: 2%; }
@@ -922,7 +912,6 @@ button:disabled { cursor: default; }
 
 @media (max-width: 900px) {
   input, select { font-size: 16px !important; }
-  .game-room > div { border-width: 4px; border-radius: 14px; }
   .duel-scoreboard { top: 6px; left: 6px; min-width: 132px; padding: 4px; }
   .duel-score-team strong { font-size: 20px; }
   .room-exit-actions { top: 8px; right: 6px; gap: 4px; }
@@ -1194,7 +1183,6 @@ button:disabled { cursor: default; }
    alone is not a reliable mobile detector. Coarse-pointer devices use this
    layout too, even when their reported width exceeds 1000px. */
 @media (max-width: 0px) {
-  .game-room { padding: 4px; }
   .game-table {
     display: grid !important;
     grid-template-columns: minmax(92px, 18vw) minmax(0, 1fr) minmax(112px, 19vw);
