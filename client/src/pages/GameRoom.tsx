@@ -309,7 +309,7 @@ export default function GameRoom() {
   };
 
   return (
-    <div className={`game-room${waiting ? ' is-waiting' : ''}${isSpectator ? ' is-spectator' : ''}`} style={styles.container}>
+    <div className={`game-room${waiting ? ' is-waiting' : ''}${isSpectator ? ' is-spectator' : ''}${isMyTurn || isMyReturnTribute ? ' can-act' : ''}`} style={styles.container}>
       <div className="game-table" style={styles.table}>
         <div className="duel-scoreboard" aria-label="双方当前级牌">
           <div className={`duel-score-team ${isSpectator ? (leadingTeam === 0 ? 'is-leading' : 'is-trailing') : (ownIsLeading ? 'is-leading' : 'is-trailing')}`}>

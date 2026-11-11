@@ -107,40 +107,34 @@ export default function CardComponent({ card, selected, onClick, onContextMenu, 
         background,
         cursor: onClick ? 'pointer' : 'default',
         color,
-      }}
+        '--joker-letter-size': typeof w === 'number' ? `${w * .23}px` : `calc(${w} * .23)`,
+      } as React.CSSProperties}
     >
-      <div className={`card-corner${isHandCard ? ' card-corner--hand' : ''}`}>
+      {!isJoker && <div className={`card-corner${isHandCard ? ' card-corner--hand' : ''}`}>
         <span className="card-rank" style={{ fontSize: corner }}>{display}</span>
-        {!isJoker && <span className="card-corner-suit" style={{ fontSize: cornerSuit }}>{suitSymbol}</span>}
-      </div>
+        <span className="card-corner-suit" style={{ fontSize: cornerSuit }}>{suitSymbol}</span>
+      </div>}
+      {isJoker && <span className="joker-lettering" aria-hidden="true">{[...'JOKER'].map((letter, index) => <span key={index}>{letter}</span>)}</span>}
 
       <div
         className={`card-center${isJoker ? ' card-center--joker' : ''}`}
         style={isJoker ? { color } : undefined}
       >
         {isJoker ? (
-          <span className="joker-face">
-            <span className="joker-crown" style={{ fontSize: center }}>{card.rank === Rank.BigJoker ? '♛' : '♞'}</span>
-            <span className="joker-title">{jokerName}</span>
-          </span>
+          <img className="joker-illustration" src="/images/joker-mascot.svg" alt="" draggable={false} />
         ) : (
           <span style={{ fontSize: center }}>{suitSymbol}</span>
         )}
       </div>
 
-      {!isHandCard && (
+      {!isHandCard && !isJoker && (
         <div className="card-corner card-corner--bottom">
           <span className="card-rank" style={{ fontSize: corner }}>{display}</span>
-          {!isJoker && <span className="card-corner-suit" style={{ fontSize: cornerSuit }}>{suitSymbol}</span>}
+          <span className="card-corner-suit" style={{ fontSize: cornerSuit }}>{suitSymbol}</span>
         </div>
       )}
 
       {isHandCard && isLevelCard && <span className="level-card-badge">级牌</span>}
-      {isJoker && (
-        <span className={`joker-card-badge joker-card-badge--${card.rank === Rank.BigJoker ? 'big' : 'small'}`}>
-          {jokerName}
-        </span>
-      )}
     </div>
   );
 }
