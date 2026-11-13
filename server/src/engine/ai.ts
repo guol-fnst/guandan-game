@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
@@ -741,8 +741,12 @@ function orderCandidates(
     const strandedAfterBomb = !isFreePlay && isBombPattern(play)
       && after?.continuation?.exact && after.continuation.extraTurns >= 1
       && after.continuation.largestRemainingGroup <= 2 && after.remainingTurns.turns >= 3 ? 180 : 0;
+    const urgent = context?.players.some(p => p.finishRank === null
+      && ((p.relation === 'opponent' && p.cardCount <= 5) || (p.relation === 'partner' && p.cardCount <= 2)));
+    const tailCost = urgent ? 0 : (after?.continuation?.tailControlCost
+      ?? tailControlCost(hand, play, wholeHandPlays, currentLevel));
     scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds, teamPlan)
-      + recaptureBonus(play) + structureScore + looseBonus - strandedAfterBomb
+      + recaptureBonus(play) + structureScore + looseBonus - strandedAfterBomb - tailCost
       + (endgameRoutes[analysisKey(play)]?.score || 0)
       + scoreTeamPlan(play, hand, wholeHandPlays, currentLevel, isFreePlay, teamPlan, context, memory));
   }

@@ -23,6 +23,19 @@ export function resourceCost(hand: Card[], play: CardPattern, level: number) {
   };
 }
 
+export function tailControlCost(hand: Card[], play: CardPattern, allPlays: CardPattern[], level: number): number {
+  if (isBombPattern(play) || hand.length > 12 || play.cards.length === hand.length
+    || !play.cards.some(c => effectiveRank(c.rank, level) >= effectiveRank(Rank.Ace, level))) return 0;
+  const cost = resourceCost(hand, play, level);
+  if (cost.remaining_high_cards) return 0;
+  const used = new Set(play.cards.map(c => c.id));
+  const grouped = new Set(allPlays.filter(p => p.cards.length > 1 && p.cards.every(c => !used.has(c.id)))
+    .flatMap(p => p.cards.map(c => c.id)));
+  const stranded = hand.filter(c => !used.has(c.id) && !grouped.has(c.id)
+    && effectiveRank(c.rank, level) < Rank.Queen).length;
+  return 160 * Math.min(2, stranded);
+}
+
 export interface TurnEstimate {
   turns: number;
   exact: boolean;
@@ -41,7 +54,7 @@ export interface DecisionAnalysis {
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
   handTurns: TurnEstimate;
-  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number } }>;
+  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
 }
@@ -737,6 +750,7 @@ export async function analyzeDecision(
     analysis.candidates[analysisKey(play)] = { remainingTurns, endgameRoute,
       continuation: { extraTurns: 1 + remainingTurns.turns - analysis.handTurns.turns,
         exact: remainingTurns.exact && analysis.handTurns.exact,
+        tailControlCost: tailControlCost(hand, play, allPlays, level),
         largestRemainingGroup: Math.max(0, ...allPlays.filter(group =>
           group.cards.every(card => !used.has(card.id))).map(group => group.cards.length)) } };
   };

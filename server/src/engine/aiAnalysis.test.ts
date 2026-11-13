@@ -7,7 +7,7 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
-  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost,
+  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
 } from './aiAnalysis';
 import { llmFindBestPlay, parseStrategyPlan } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
@@ -551,7 +551,7 @@ test('bomb continuation exposes the lost straight and guards calm waste, but all
   assert.equal(analysis.handTurns.turns, 3);
   assert.equal(analysis.candidates[analysisKey(bomb)].remainingTurns.turns, 5);
   assert.deepEqual(analysis.candidates[analysisKey(bomb)].continuation,
-    { extraTurns: 3, exact: true, largestRemainingGroup: 2 });
+    { extraTurns: 3, exact: true, largestRemainingGroup: 2, tailControlCost: 0 });
   const context = contextFor([hand, [], [], []]);
   context.lastPlayPlayerIndex = 1;
   context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 8; });
@@ -1014,4 +1014,21 @@ test('takeover routes retain a concrete feed and distinguish guaranteed control 
   const uncertain=buildTeamRoutes(hand,all,replies,last,2,{...ctx,actionHistory:undefined},{},generateLegalPlays)
     .find(r=>r.goal==='takeover_change')!;
   assert.equal(uncertain.controlProven,false);
+});
+
+test('tail resource cost preserves a last control without penalizing an actual one-play exit', () => {
+  const hand=rankedHand([14,3,4,6,7]);
+  const all=generateLegalPlays(hand,2),ace=all.find(p=>p.rank===14)!;
+  assert.equal(tailControlCost(hand,ace,all,2),320);
+  assert.equal(resourceCost(hand,ace,2).remaining_high_cards,0);
+  const grouped=rankedHand([14,3,3,3]);
+  const plays=generateLegalPlays(grouped,2),high=plays.find(p=>p.rank===14)!;
+  assert.equal(tailControlCost(grouped,high,plays,2),0,'taking control and leaving a triple is productive');
+  const withControl=rankedHand([14,16,3,4]);
+  const options=generateLegalPlays(withControl,2);
+  assert.equal(tailControlCost(withControl,options.find(p=>p.rank===14)!,options,2),0);
+  const bombs=rankedHand([11,11,11,11,13,13,13,13,12,12]);
+  const combos=generateLegalPlays(bombs,2);
+  const group=combos.find(p=>p.type===PatternType.ConsecutivePair&&p.rank===13)!;
+  assert.equal(resourceCost(bombs,group,2).broken_natural_bombs.length,2);
 });
