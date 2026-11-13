@@ -1,5 +1,45 @@
 .table-watermark, .mobile-room-menu { display: none; }
 
+/* Phones keep reports close to their seat, clear of the turn countdown. */
+@media (max-width: 600px), (orientation: landscape) and (max-height: 650px) and (max-width: 1200px) {
+  .game-room .card-count-badge {
+    right: -3px;
+    bottom: -9px;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 17px;
+  }
+  .game-room .card-count-badge strong { font-size: 12px; }
+  .game-room .card-count-report {
+    top: auto;
+    bottom: -12px;
+    left: -4px;
+    right: -4px;
+    justify-content: center;
+    gap: 0;
+    padding: 4px 2px;
+    border-radius: 9px;
+    font-size: 10px;
+    line-height: 20px;
+    transform-origin: center;
+    animation-name: card-report-mobile-pop;
+  }
+  .game-room .card-count-report::before,
+  .game-room .card-count-report-label { display: none; }
+  .game-room .card-count-report strong { font-size: 19px; }
+}
+
+@keyframes card-report-mobile-pop {
+  0% { opacity: 0; transform: translateY(5px) scale(.85); }
+  12% { opacity: 1; transform: translateY(-3px) scale(1.04); }
+  22%, 85% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-3px) scale(.95); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-room .card-count-report { animation: none; }
+}
+
 /* Landscape phones: a compact header, four seats and a full-width hand.
    Keep these rules separate from the established portrait and desktop layouts. */
 @media (orientation: landscape) and (max-height: 650px) and (max-width: 1200px) {
@@ -120,6 +160,8 @@
   .game-room .self-player-seat .player-info { display: flex; flex-direction: row; width: auto; max-width: 160px; padding: 3px 6px !important; gap: 6px !important; background: transparent !important; border-color: transparent !important; }
   .game-room .self-player-seat .player-info > div > span, .game-room .self-player-seat .player-info > span:last-child { display: none; }
   .game-room .self-player-seat .player-info[data-seconds-left]::after { top: -38px; left: 0; right: auto; }
+  .game-room .self-player-seat .card-count-badge { top: -13px; bottom: auto; }
+  .game-room .self-player-seat .card-count-report { bottom: 0; }
   .game-room .tribute-panel { max-height: 23dvh; }
   .game-room.is-waiting .table-watermark { display: none; }
   .game-room.is-waiting .game-center-play-area { top: 53%; }

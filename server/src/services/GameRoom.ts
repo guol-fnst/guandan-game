@@ -653,7 +653,9 @@ export class GameRoom {
     });
     this.emitHandToPlayer(playerId);
 
-    if (hand.length <= 10 && !this.reportedCounts.has(playerId)) {
+    const previousReport = this.reportedCounts.get(playerId);
+    if (hand.length > 0 && hand.length <= 10
+      && (previousReport === undefined || (hand.length <= 6 && previousReport > 6))) {
       this.reportedCounts.set(playerId, hand.length);
       this.broadcastEvent('card_count_report', { playerId, count: hand.length });
     }

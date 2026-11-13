@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import { PlayerInfo as PlayerInfoType } from '../sharedTypes';
+import './PlayerInfo.css';
 
 interface Props {
   player: PlayerInfoType;
@@ -17,9 +19,27 @@ const TEAM_COLORS = {
 
 export default function PlayerInfoComponent({ player, position, isCurrent, isMe, isPartner, secondsLeft }: Props) {
   const bgColor = isMe ? TEAM_COLORS.mine : isPartner ? TEAM_COLORS.partner : TEAM_COLORS.opponent;
+  const reportCount = player.reportedCardCount;
+  const hasReport = reportCount !== undefined && player.cardCount > 0;
+  const warningLevel = hasReport ? (player.cardCount <= 6 ? 'critical' : 'low') : null;
+  const [announcement, setAnnouncement] = useState<{ playerId: string; count: number } | null>(null);
+
+  useEffect(() => {
+    if (!hasReport || reportCount === undefined) {
+      setAnnouncement(null);
+      return;
+    }
+    setAnnouncement({ playerId: player.id, count: reportCount });
+    const timer = window.setTimeout(() => setAnnouncement(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [player.id, reportCount, hasReport]);
+
+  const showAnnouncement = hasReport && announcement?.playerId === player.id
+    && announcement.count === reportCount;
 
   return (
     <div className={`player-info player-info--${position}${isCurrent ? ' is-current' : ''}${isCurrent && secondsLeft != null && secondsLeft <= 10 ? ' is-urgent' : ''}`} data-seconds-left={isCurrent ? secondsLeft ?? undefined : undefined} style={{
+      position: 'relative',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
@@ -77,6 +97,23 @@ export default function PlayerInfoComponent({ player, position, isCurrent, isMe,
       <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
         Lv.{player.level} | {player.cardCount === 0 ? '已出完' : player.reportedCardCount !== undefined ? `剩余${player.cardCount}张` : '未报牌'}
       </span>
+      {warningLevel && (
+        <aside className={`card-count-badge card-count-badge--${warningLevel}`} aria-label={`剩余${player.cardCount}张牌`}>
+          <strong>{player.cardCount}</strong> 张
+        </aside>
+      )}
+      {showAnnouncement && (
+        <aside
+          key={`${player.id}-${reportCount}`}
+          className={`card-count-report card-count-report--${warningLevel}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span className="card-count-report-label">报牌</span>
+          <span>只剩 <strong>{announcement.count}</strong> 张了！</span>
+        </aside>
+      )}
     </div>
   );
 }
