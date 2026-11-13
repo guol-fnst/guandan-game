@@ -12,6 +12,9 @@ export const DEFAULT_AI_SELECTION: AiModelSelection = {
   model: LOCAL_AI_MODEL,
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
+// Keep room for complete JSON; this is a ceiling, not a target length.
+// Thinking is explicitly disabled below to reduce per-turn latency.
+const DEEPSEEK_MAX_OUTPUT_TOKENS = 4096;
 
 interface ProviderConfig {
   baseUrl: string;
@@ -426,7 +429,7 @@ export async function llmFindBestPlay(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'deepseek' ? 1536 : 4096,
+        max_tokens: normalizedSelection.provider === 'deepseek' ? DEEPSEEK_MAX_OUTPUT_TOKENS : 4096,
       };
       if (normalizedSelection.provider === 'deepseek') {
         requestBody.thinking = { type: 'disabled' };
@@ -457,13 +460,30 @@ export async function llmFindBestPlay(
       return undefined;
     }
 
+    const choice = data?.choices?.[0];
+    const content = choice?.message?.content;
+    // Record diagnostics without storing prompts, cards or reasoning text.
+    console.info('[LLM AI response]', JSON.stringify({
+      provider: normalizedSelection.provider,
+      model: normalizedSelection.model,
+      finishReason: choice?.finish_reason ?? null,
+      promptTokens: data?.usage?.prompt_tokens ?? null,
+      completionTokens: data?.usage?.completion_tokens ?? null,
+      reasoningTokens: data?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+      contentLength: typeof content === 'string' ? content.length : 0,
+      reasoningLength: typeof choice?.message?.reasoning_content === 'string'
+        ? choice.message.reasoning_content.length : 0,
+      elapsedMs: Math.round(performance.now() - modelStarted),
+    }));
     const decision = decodeModelDecision(data, legalPlays.length, isFreePlay);
     if ('failure' in decision) {
       recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
       // Never log response text, prompts or credentials.
       console.warn('[AI response]', JSON.stringify({
         provider: normalizedSelection.provider, model: normalizedSelection.model,
-        reason: decision.failure, finishReason: data?.choices?.[0]?.finish_reason,
+        reason: decision.failure,
+        cause: decision.failure === 'truncated' ? 'output_token_limit' : decision.failure,
+        finishReason: data?.choices?.[0]?.finish_reason,
         contentLength: data?.choices?.[0]?.message?.content?.length || 0,
         completionTokens: data?.usage?.completion_tokens,
         reasoningTokens: data?.usage?.completion_tokens_details?.reasoning_tokens,
