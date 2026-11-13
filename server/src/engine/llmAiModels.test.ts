@@ -142,7 +142,8 @@ test('model failover precedes local rules and keeps only the successful plan', a
       }
       const successful = scenario.primary === 'valid' || scenario.primary === 'pass'
         || scenario.backup === 'valid';
-      assert.equal(plan?.next, successful ? requests.at(-1).model : undefined);
+      if (scenario.primary === 'pass') assert.ok(plan?.next, 'surviving hand gets a grounded continuation');
+      else assert.equal(plan, undefined, 'a direct finish must not persist an invented continuation');
       if (scenario.primary === 'pass') assert.equal(result, null, 'valid PASS must not retry');
       else assert.equal(result?.cards.length, hand.length, 'both failed still produce a legal finish');
     }

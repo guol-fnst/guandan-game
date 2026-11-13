@@ -502,7 +502,7 @@ export interface CompressedAiCandidates {
   equivalentCounts: number[];
 }
 
-const MODEL_ACTION_LIMIT = 96;
+const MODEL_ACTION_LIMIT = 24;
 
 /** Bound prompt size without deleting an entire strategic family. Input is
  * already heuristic-ordered; round-robin selection preserves representatives
@@ -546,6 +546,48 @@ export function limitModelCandidates(
  * only by equivalent physical cards. Because input is already Base7 ordered,
  * the retained representative is the least damaging concrete realization.
  */
+export function pruneOpeningWildLeads(
+  plays: CardPattern[], hand: Card[], level: number, context?: AiDecisionContext,
+): CardPattern[] {
+  if (hand.length < 20 || !context || context.players.some(p => p.finishRank !== null || p.cardCount < 20)
+    || (context.actionHistory || context.recentActions).filter(a => a.action === 'play').length > 4) return plays;
+  const held = getRankCounts(hand);
+  const natural = plays.filter(p => !isBombPattern(p) && !p.cards.some(c => isWildCard(c, level))
+    && p.cards.every(c => (held.get(c.rank)?.length || 0) < 4
+      || p.cards.filter(x => x.rank === c.rank).length === held.get(c.rank)!.length));
+  return plays.filter(p => isBombPattern(p) || !p.cards.some(c => isWildCard(c, level))
+    || !natural.some(n => n.type === p.type && n.length === p.length && (n.rank === p.rank || canBeat(n, p, level))
+      && n.cards.every(c => p.cards.some(x => x.id === c.id)
+        || effectiveRank(c.rank, level) < effectiveRank(Rank.Ace, level))));
+}
+
+export function removeWastefulWildRealizations(plays: CardPattern[], level: number): CardPattern[] {
+  const groups = new Map<string, CardPattern[]>();
+  const keyOf = (play: CardPattern) => {
+    const resolved = play.cards.map(card => play.substitutions?.find(s => s.id === card.id) || card);
+    const ranks = resolved.map(c => c.rank).sort((a,b) => a-b).join(',');
+    const suit = play.type === PatternType.FlushStraight ? resolved[0]?.suit : '';
+    return `${play.type}:${play.rank}:${play.length}:${ranks}:${suit}`;
+  };
+  for (const play of plays) {
+    const key = keyOf(play);
+    const group = groups.get(key) || [];
+    group.push(play);
+    groups.set(key, group);
+  }
+  return plays.filter(play => {
+    const wilds = play.cards.filter(c => isWildCard(c, level)).length;
+    if (!wilds) return true;
+    const natural = play.cards.filter(c => !isWildCard(c, level));
+    // Same declaration, and every original natural card is retained in the
+    // replacement. Its remaining hand exchanges ordinary cards for flexible
+    // wildcards, rather than sacrificing a different natural group.
+    return !groups.get(keyOf(play))!.some(other =>
+      other.cards.filter(c => isWildCard(c, level)).length < wilds
+      && natural.every(card => other.cards.some(c => c.id === card.id)));
+  });
+}
+
 export function compressCandidatesForModel(
   ordered: CardPattern[],
   currentLevel: number,
@@ -949,10 +991,14 @@ export function enforceTeamStrategy(
     const naturalHand = hand.filter(c => !isWildCard(c, level));
     const held = getRankCounts(hand);
     const natural = generateLegalPlays(naturalHand, level).filter(play =>
-      play.type === proposed!.type && play.rank === proposed!.rank && play.length === proposed!.length
+      play.type === proposed!.type && play.length === proposed!.length
+      && (play.rank === proposed!.rank || canBeat(play, proposed!, level))
+      && play.cards.every(card => proposed!.cards.some(c => c.id === card.id)
+        || (effectiveRank(card.rank, level) < effectiveRank(Rank.Ace, level)))
       && play.cards.every(card => (held.get(card.rank)?.length || 0) < 4
         || play.cards.filter(c => c.rank === card.rank).length === held.get(card.rank)!.length));
-    const replacement = orderCandidates(natural, hand, level, free, context, analysis)[0];
+    const equal = natural.filter(p => p.rank === proposed!.rank);
+    const replacement = orderCandidates(equal.length ? equal : natural, hand, level, free, context, analysis)[0];
     if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) proposed = replacement;
   }
   const leader = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);
@@ -1102,6 +1148,26 @@ export function finalizeAiDecision(
   return selected;
 }
 
+export function groundStrategyPlan(
+  hand: Card[], allPlays: CardPattern[], executed: CardPattern | null, analysis?: DecisionAnalysis,
+): AiStrategyPlan | undefined {
+  const used = new Set(executed?.cards.map(c => c.id) || []);
+  const remaining = hand.length - used.size;
+  if (!remaining) return undefined;
+  const available = allPlays.filter(p => p.cards.every(c => !used.has(c.id)));
+  const route = analysis?.candidates[executed ? analysisKey(executed) : '']?.endgameRoute;
+  const team = analysis?.teamRoutes?.find(r => r.actionKey === (executed ? analysisKey(executed) : null)
+    && r.nextLead);
+  const shape = route?.recapture || route?.exit || team?.nextLead;
+  const next = (shape && available.find(p => p.type === shape.type && p.rank === shape.rank && p.length === shape.length))
+    || available.find(p => p.cards.length === remaining);
+  return {
+    next: next ? `保留的后续候选：${next.type}，声明点数${next.rank}，${next.cards.length}张；须先取得适合牌权`
+      : `余牌${remaining}张，重新比较完整组合与回手；尚无已验证的连续收尾路线`,
+    reconsiderWhen: '每次公开出牌后重验；对手报牌、名次或牌型变化时重规划，不能假定必能回手',
+  };
+}
+
 export interface AiDecisionTrace {
   source: 'primary' | 'backup' | 'local' | 'forced';
   routes?: string[];
@@ -1125,7 +1191,8 @@ export async function findSmartPlay(
   if (!isFreePlay && lastPattern) {
     legalPlays = legalPlays.filter(play => canBeat(play, lastPattern, currentLevel));
   }
-  legalPlays = dedupeStrategicPlays(legalPlays);
+  legalPlays = dedupeStrategicPlays(removeWastefulWildRealizations(legalPlays, currentLevel));
+  if (isFreePlay) legalPlays = pruneOpeningWildLeads(legalPlays, hand, currentLevel, context);
   // Skip strategic analysis only when there is genuinely no choice. During a
   // follow, PASS is also legal and even one playable bomb is a real decision.
   if (isForcedAiDecision(legalPlays.length, isFreePlay)) {
@@ -1144,6 +1211,8 @@ export async function findSmartPlay(
   // The hint system keeps every physical action. The model sees every distinct
   // declared strategy, with equivalent deck-copy/suit choices compressed.
   const completeLegalPlays = legalPlays;
+  const safeRuleResult = ruleResult && legalPlays.some(play => analysisKey(play) === analysisKey(ruleResult))
+    ? ruleResult : legalPlays[0] || null;
   const completeCompressed = compressCandidatesForModel(
     orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays),
     currentLevel,
@@ -1160,11 +1229,11 @@ export async function findSmartPlay(
     return index >= 0 ? compressed.equivalentCounts[index] : 1;
   });
   const equivalentCountByPlay = new Map(legalPlays.map((play, index) => [play, equivalentCounts[index]]));
-  if (ruleResult && !legalPlays.some(play => analysisKey(play) === analysisKey(ruleResult))) {
-    const replacement = legalPlays.findIndex(play => play.type === ruleResult.type && play.rank === ruleResult.rank);
-    if (replacement >= 0) legalPlays[replacement] = ruleResult;
-    else legalPlays.push(ruleResult);
-    equivalentCountByPlay.set(ruleResult, 1);
+  if (safeRuleResult && !legalPlays.some(play => analysisKey(play) === analysisKey(safeRuleResult))) {
+    const replacement = legalPlays.findIndex(play => play.type === safeRuleResult.type && play.rank === safeRuleResult.rank);
+    if (replacement >= 0) legalPlays[replacement] = safeRuleResult;
+    else legalPlays.push(safeRuleResult);
+    equivalentCountByPlay.set(safeRuleResult, 1);
   }
   const handCombinations = isFreePlay ? compressed : limitModelCandidates(compressCandidatesForModel(
     orderCandidates(dedupeStrategicPlays(allPlays), hand, currentLevel, true, context, undefined, allPlays),
@@ -1213,7 +1282,8 @@ export async function findSmartPlay(
         );
         // A changed action invalidates the model's continuation, including PASS.
         if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
-          onPlan?.(plan);
+          const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
+          if (grounded) onPlan?.(grounded);
         }
         onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final),
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });

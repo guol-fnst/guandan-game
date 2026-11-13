@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
 import { createDeck } from './card';
-import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates } from './ai';
+import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates, removeWastefulWildRealizations, groundStrategyPlan, pruneOpeningWildLeads } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
@@ -357,12 +357,11 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.deepEqual(route.continuation, analysis.candidates[analysisKey(plays[0])].continuation);
     assert.ok(input.team_routes.every((item: any) => Number.isInteger(item.action_id) && item.action_id >= 0));
 
-    assert.equal(input.legal_action_member_schema[10], 'analysis');
-    assert.equal(input.legal_actions[0][1][0][10].remainingTurns.turns, 0);
+    assert.equal(input.legal_actions[0].analysis.remainingTurns.turns, 0);
     assert.equal(input.candidate_coverage.model_actions, plays.length);
     assert.equal(input.candidate_coverage.represented_equivalent_actions, plays.length);
     assert.equal(input.hand_combinations.same_as_legal_actions, true);
-    assert.equal(input.legal_actions[0][1][0][4], 1);
+    assert.equal(input.legal_actions[0].equivalent_variants, 1);
     assert.equal(typeof input.public_inference.unseen_controls, 'string');
     assert.ok(input.public_memory.publicly_known_cards.every((p: any) => p.cards === ''));
     assert.equal(input.sampled_hands, undefined);
@@ -734,7 +733,7 @@ test('strategy memory reaches only its decision; corrected actions discard the p
     rawResult.action_id = 0;
     await findSmartPlay(hand, null, true, 2, undefined,
       { provider: 'deepseek', model: 'deepseek-flash' }, p => { received = p; });
-    assert.equal((received as any).next, '保留控制张');
+    assert.equal(received, undefined, 'a finished hand has no next-hand plan');
   } finally {
     globalThis.fetch = previousFetch;
     if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
@@ -906,6 +905,15 @@ test('reviewed opening preserves both heart-level wildcards when natural cards m
   for (const rank of [Rank.King, Rank.Jack]) {
     assert.ok(result.cards.every(c => c.rank !== rank), 'does not dismantle a natural bomb');
   }
+  const lowPairs = all.find(p => p.type === PatternType.ConsecutivePair && p.rank === 4
+    && p.cards.filter(c => c.rank === 8 && c.suit === Suit.Heart).length === 2)!;
+  assert.ok(lowPairs);
+  assert.ok(!pruneOpeningWildLeads(all, hand, 8, context).includes(lowPairs),
+    'do not ask the model to choose a resource-wasting opening in the first place');
+  const protectedPairs = enforceTeamStrategy(lowPairs, all, hand, null, true, 8, context)!;
+  assert.equal(protectedPairs.type, PatternType.ConsecutivePair);
+  assert.ok(protectedPairs.rank >= lowPairs.rank);
+  assert.ok(protectedPairs.cards.every(c => c.rank !== 8 || c.suit !== Suit.Heart));
   context.players[1].cardCount = 2;
   assert.equal(enforceTeamStrategy(proposed, [proposed], hand, null, true, Rank.Eight, context), proposed,
     'opening conservation must not govern reported endgames');
@@ -916,4 +924,31 @@ test('reviewed opening preserves both heart-level wildcards when natural cards m
   const last: CardPattern = { type: PatternType.Straight, rank: Rank.Four, length: 5, cards: [] };
   assert.equal(enforceTeamStrategy(proposed, [proposed], hand, last, false, Rank.Eight, context), proposed,
     'the change does not ban spending wildcards to follow');
+});
+
+
+test('grounded memory references only surviving cards and never a fabricated control', () => {
+  const hand = rankedHand([3, 3, 3, Rank.BigJoker]);
+  const all = generateLegalPlays(hand, 2);
+  const joker = all.find(p => p.rank === Rank.BigJoker)!;
+  const memory = groundStrategyPlan(hand, all, joker)!;
+  assert.match(memory.next, /triple/);
+  assert.doesNotMatch(memory.next, /king_bomb/);
+  assert.equal(groundStrategyPlan(joker.cards, [joker], joker), undefined);
+});
+
+test('wildcard dominance requires the same declaration and all original natural cards', () => {
+  const deck = createDeck();
+  const hand = [66,80,69,19,73,11,91,37,14,68,57,96,17,71,59,44,63,9,76,22,102,7,61,75,10,23,104]
+    .map(id => deck.find(c => c.id === id)!);
+  const all = generateLegalPlays(hand, 8);
+  const waste = all.find(p => p.type === PatternType.Straight && p.rank === 5
+    && [66,80,69,19,73].every(id => p.cards.some(c => c.id === id)))!;
+  assert.ok(waste);
+  const filtered = removeWastefulWildRealizations(all, 8);
+  assert.ok(!filtered.includes(waste));
+  assert.ok(filtered.some(p => p.type === PatternType.Straight && p.rank === 5
+    && p.cards.every(c => c.rank !== 8 || c.suit !== Suit.Heart)));
+  assert.deepEqual(removeWastefulWildRealizations([waste], 8), [waste],
+    'keep wildcard actions that have no equivalent natural alternative');
 });
