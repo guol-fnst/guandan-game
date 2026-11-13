@@ -1145,16 +1145,20 @@ export function finalizeAiDecision(
   let accepted = recent;
   const complete = () => { onCorrections?.(accepted); return selected; };
 
-  // A model PASS without rollout evidence still needs to respect public tempo.
+  // A model PASS still needs to respect public tempo. Merely having rollout
+  // samples is not evidence that passing is better than the actual response.
   // Prefer an intact ordinary response with a real group left to lead; spend
   // bombs only through the local defence policy or a last reported-single stop.
   const leader = context?.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
-  if (!selected && !free && context && last && !analysis?.passSimulation
+  if (!selected && !free && context && last
     && leader?.relation === 'opponent' && leader.finishRank === null) {
     const repeated = opponentControlStreak(context) >= 2;
     const urgent = leader.cardCount <= 2;
+    const finishPressure = repeated && leader.cardCount <= 5;
+    const ordinaryContest = leader.cardCount <= 12 && hand.length >= leader.cardCount + 3
+      && [PatternType.Single, PatternType.Pair].includes(last.type);
     const partnerHead = context.players.some(player => player.relation === 'partner' && player.finishRank === 1);
-    if (repeated || urgent || (partnerHead && leader.cardCount <= 5)) {
+    if (repeated || urgent || ordinaryContest || (partnerHead && leader.cardCount <= 5)) {
       const allPlays = generateLegalPlays(hand, level);
       const counts = getRankCounts(hand);
       const ordinary = candidates.filter(play => {
@@ -1164,6 +1168,7 @@ export function finalizeAiDecision(
         // immediate pressure, while retaining the normal conservation filter.
         const boundedSplit = urgent && continuation?.exact && continuation.extraTurns <= 2;
         return !isBombPattern(play)
+          && (!(ordinaryContest && !repeated && !urgent && !partnerHead) || !play.cards.some(isJoker))
           && play.cards.every(card => !isWildCard(card, level)
             && (boundedSplit || (counts.get(card.rank)?.length || 0)
               === play.cards.filter(c => c.rank === card.rank).length))
@@ -1173,10 +1178,20 @@ export function finalizeAiDecision(
       const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context, allPlays) : ruleFallback;
       let response = ordinary.length ? orderCandidates(ordinary, hand, level, false, context, analysis, allPlays)[0] : null;
       if (!response && (urgent || partnerHead)) response = fallback;
+      if (!response && finishPressure) {
+        // An intact ordinary bomb can change the lead shape before a
+        // three-to-five-card opponent gets its final lead. Do not dismantle a
+        // larger rank group or spend wildcard resources for this prior.
+        response = candidates.filter(play => isBombPattern(play)
+          && play.cards.every(card => !isWildCard(card, level)
+            && play.cards.filter(c => c.rank === card.rank).length === counts.get(card.rank)?.length))
+          .sort((a,b) => canBeat(a,b,level) ? 1 : canBeat(b,a,level) ? -1 : 0)[0] || null;
+      }
       if (!response && leader.cardCount === 1 && passPosition(context).closesTrick) {
         response = [...candidates].sort((a, b) => canBeat(a, b, level) ? 1 : canBeat(b, a, level) ? -1 : 0)[0] || null;
       }
-      if (response && candidates.some(play => analysisKey(play) === analysisKey(response))) {
+      if (response && candidates.some(play => analysisKey(play) === analysisKey(response))
+        && !reliablyBetterSimulation(analysis?.passSimulation, analysis?.candidates[analysisKey(response)]?.simulation)) {
         const result = guard(response);
         if (result) {
           accepted = [...accepted, { rule: 'urgent_interception', priority: AI_POLICY_PRIORITY.urgent_interception,

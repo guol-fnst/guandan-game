@@ -1032,3 +1032,42 @@ test('tail resource cost preserves a last control without penalizing an actual o
   const group=combos.find(p=>p.type===PatternType.ConsecutivePair&&p.rank===13)!;
   assert.equal(resourceCost(bombs,group,2).broken_natural_bombs.length,2);
 });
+
+test('intact ordinary interception does not require an uninterrupted streak or absent simulations', () => {
+  const hand=rankedHand([2,2,3,3,3,12,13]);
+  hand.filter(c=>c.rank===2).forEach(c=>{c.suit=Suit.Spade});
+  const all=generateLegalPlays(hand,2),pair=all.find(p=>p.type===PatternType.Pair&&p.rank===2)!;
+  const last:CardPattern={type:PatternType.Pair,rank:13,length:2,cards:[]};
+  const ctx=contextFor([hand,[],[],[]]);
+  ctx.lastPlayPlayerIndex=1;
+  ctx.players.forEach(p=>{if(p.relation!=='self')p.cardCount=10});
+  ctx.players[1].cardCount=4;
+  const sample=(samples:number,meanReward:number)=>({samples,meanReward,winRate:0,doubleWinRate:0});
+  const analysis:DecisionAnalysis={handTurns:{turns:4,exact:true},
+    candidates:{[analysisKey(pair)]:{remainingTurns:{turns:3,exact:true},simulation:sample(4,0)}},
+    passSimulation:sample(4,1),simulation:{status:'sampled',samples:4,elapsedMs:0}};
+  assert.equal(finalizeAiDecision(null,[pair],hand,last,false,2,ctx,analysis,null),pair,
+    'four lucky PASS samples must not disable a structurally cheap interception');
+  analysis.passSimulation=sample(16,1);
+  analysis.candidates[analysisKey(pair)].simulation=sample(16,0);
+  assert.equal(finalizeAiDecision(null,[pair],hand,last,false,2,ctx,analysis,null),null,
+    'substantial paired evidence for PASS remains respected');
+  ctx.lastPlayPlayerIndex=2;
+  assert.equal(finalizeAiDecision(null,[pair],hand,last,false,2,ctx,undefined,null),null,
+    'do not steal the teammate lead');
+});
+
+test('repeated leads with three to five cards trigger an intact bomb defence before report-single', () => {
+  const hand=rankedHand([4,4,4,4,7,9]);
+  const bomb=generateLegalPlays(hand,2).find(p=>p.type===PatternType.Bomb4)!;
+  const last:CardPattern={type:PatternType.TriplePair,rank:5,length:5,cards:[]};
+  const ctx=contextFor([hand,[],[],[]]);ctx.lastPlayPlayerIndex=1;
+  ctx.players.forEach(p=>{if(p.relation!=='self')p.cardCount=12});
+  ctx.players[1].cardCount=4;
+  ctx.actionHistory=[{seatIndex:1,action:'play',pattern:last},{seatIndex:0,action:'pass'},
+    {seatIndex:1,action:'play',pattern:last}];
+  assert.equal(finalizeAiDecision(null,[bomb],hand,last,false,2,ctx,undefined,null),bomb);
+  ctx.players[1].cardCount=12;
+  assert.equal(finalizeAiDecision(null,[bomb],hand,last,false,2,ctx,undefined,null),null,
+    'do not spend bombs on a calm large hand with no ordinary continuation');
+});
