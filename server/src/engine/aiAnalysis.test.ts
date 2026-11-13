@@ -981,3 +981,19 @@ test('policy priority explains finish and defence overrides without changing sel
     notes => unchanged.push(...notes)), level);
   assert.equal(unchanged.length, 0, 'do not invent corrections for an unchanged model decision');
 });
+
+
+test('reported-count defence keeps the block without dismantling its natural bomb', () => {
+  const hand = rankedHand([10,10,13,13,13,13,3]);
+  const all = generateLegalPlays(hand, 2);
+  const tens = all.find(p=>p.type===PatternType.Pair && p.rank===10)!;
+  const kings = all.find(p=>p.type===PatternType.Pair && p.rank===13)!;
+  const bomb = all.find(p=>p.type===PatternType.Bomb4 && p.rank===13)!;
+  const ctx = contextFor([hand, [], [], []]);ctx.players[1].cardCount=2;
+  assert.equal(enforceTeamStrategy(tens, all, hand, null, true, 2, ctx), bomb);
+  assert.equal(enforceTeamStrategy(tens, [tens,kings], hand, null, true, 2, ctx), kings,
+    'without an intact alternative, reported defence is still enforced');
+  ctx.players[1].cardCount=3;
+  assert.equal(enforceTeamStrategy(tens, all, hand, null, true, 2, ctx), tens,
+    'normal leads do not get escalated to bombs');
+});

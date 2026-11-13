@@ -775,16 +775,24 @@ export function enforceReportedNextPlayerMaximum(
 }
 
 function enforceNextPlayerReport(
-  proposed: CardPattern | null,
-  candidates: CardPattern[],
-  level: number,
-  context?: AiDecisionContext,
+  proposed: CardPattern | null, candidates: CardPattern[], level: number,
+  context?: AiDecisionContext, hand?: Card[],
 ): CardPattern | null {
   if (!context) return proposed;
-  const nextSeatIndex = (context.selfSeatIndex + 1) % 4;
-  const nextPlayer = context.players.find(player => player.seatIndex === nextSeatIndex);
+  const nextPlayer = context.players.find(p => p.seatIndex === (context.selfSeatIndex + 1) % 4);
   if (!nextPlayer || nextPlayer.finishRank !== null) return proposed;
-  return enforceReportedNextPlayerMaximum(proposed, candidates, nextPlayer.cardCount, level);
+  const maximum = enforceReportedNextPlayerMaximum(proposed, candidates, nextPlayer.cardCount, level);
+  if (!maximum || !hand || maximum === proposed) return maximum;
+  const held = getRankCounts(hand);
+  const splitRank = maximum.cards.find(c => (held.get(c.rank)?.length || 0) >= 4)?.rank;
+  if (splitRank === undefined) return maximum;
+  // Against one/two remaining cards an intact bomb also blocks that reported
+  // shape. Compare that legal declaration before dismantling its rank group.
+  // The final evidence/structure checks still evaluate the replacement.
+  const intact = candidates.filter(p => isBombPattern(p)
+    && p.cards.every(c => c.rank === splitRank && !isWildCard(c, level))
+    && p.cards.length === held.get(splitRank)!.length);
+  return intact.sort((a,b) => canBeat(a,b,level) ? 1 : canBeat(b,a,level) ? -1 : 0)[0] || maximum;
 }
 
 function retainNextPlayerReportMaximum(
@@ -827,7 +835,7 @@ export function findBestPlay(
   legalPlays = dedupeStrategicPlays(legalPlays);
   const scores = new Map<CardPattern, number>();
   const ordered = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays, scores);
-  const proposed = enforceNextPlayerReport(ordered[0], legalPlays, currentLevel, context);
+  const proposed = enforceNextPlayerReport(ordered[0], legalPlays, currentLevel, context, hand);
   if (!isFreePlay && context) {
     // The rollout policy uses this entry point too. Finite partner preferences
     // must not make simulated teammates steal tricks without a concrete plan.
@@ -1044,7 +1052,7 @@ export function enforceTeamStrategy(
         || (player.relation === 'partner' && player.cardCount <= 2)))
     && opponentControlStreak(context) < 2
     && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'bomb_structure');
-  const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
+  const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context, hand);
   if (!reportAdjusted) return null;
   // Reported-count interception is a strong prior, not a legality rule.
   // A paired team-outcome comparison can justify retaining a smaller control.
@@ -1107,7 +1115,7 @@ export function enforceTeamStrategy(
     if (partnerLed && last && !blocksReportedSingle(lower, last, hand, level, context)
       && !materiallyBetterSimulation(lower, null, analysis)
       && !productivePartnerTakeover(lower, hand, generateLegalPlays(hand, level), last, level, context)) continue;
-    const adjusted = enforceNextPlayerReport(lower, candidates, level, context);
+    const adjusted = enforceNextPlayerReport(lower, candidates, level, context, hand);
     return changed(proposed, materiallyBetterSimulation(lower, adjusted, analysis) ? lower : adjusted, 'economy');
   }
   return proposed;
