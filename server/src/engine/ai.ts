@@ -939,6 +939,22 @@ export function enforceTeamStrategy(
   }
   // Do not break a ready-to-finish hand merely to win one uncertain trick.
   // Catch-wind denial and an opponent about to finish remain valid reasons.
+  // Opening ordinary leads must not spend wildcards for a declaration that
+  // natural cards can make at identical strength. Model choice bypasses the
+  // heuristic resource price, so compare physical realizations here too.
+  const opening = free && hand.length >= 20 && context
+    && context.players.every(p => p.finishRank === null && p.cardCount >= 20)
+    && (context.actionHistory || context.recentActions).filter(a => a.action === 'play').length <= 4;
+  if (opening && !isBombPattern(proposed) && proposed.cards.some(c => isWildCard(c, level))) {
+    const naturalHand = hand.filter(c => !isWildCard(c, level));
+    const held = getRankCounts(hand);
+    const natural = generateLegalPlays(naturalHand, level).filter(play =>
+      play.type === proposed!.type && play.rank === proposed!.rank && play.length === proposed!.length
+      && play.cards.every(card => (held.get(card.rank)?.length || 0) < 4
+        || play.cards.filter(c => c.rank === card.rank).length === held.get(card.rank)!.length));
+    const replacement = orderCandidates(natural, hand, level, free, context, analysis)[0];
+    if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) proposed = replacement;
+  }
   const leader = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);
   const catchesOpponent = context && leader?.finishRank != null
     && context.players.some(p => p.seatIndex === passPosition(context).nextLead && p.relation === 'opponent');

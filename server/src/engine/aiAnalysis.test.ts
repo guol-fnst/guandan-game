@@ -882,3 +882,38 @@ test('unmeasured route selection preserves ordering rather than rewarding card c
   });
   assert.equal(measured.find(r => r.goal === 'finish_self')?.actionKey, analysisKey(triple));
 });
+
+test('reviewed opening preserves both heart-level wildcards when natural cards make the same straight', () => {
+  const deck = createDeck();
+  const hand = [66,80,69,19,73,11,91,37,14,68,57,96,17,71,59,44,63,9,76,22,102,7,61,75,10,23,104]
+    .map(id => deck.find(c => c.id === id)!);
+  const proposed: CardPattern = {
+    type: PatternType.Straight, rank: Rank.Five, length: 5,
+    cards: [66,80,69,19,73].map(id => hand.find(c => c.id === id)!),
+    substitutions: [{ id: 19, rank: Rank.Three, suit: Suit.Spade }, { id: 73, rank: Rank.Five, suit: Suit.Spade }],
+  };
+  const context = contextFor([hand, [], [], []]);
+  context.players.forEach(p => { p.cardCount = 27; });
+  context.actionHistory = [];
+  context.recentActions = [];
+  const all = generateLegalPlays(hand, Rank.Eight);
+  const result = finalizeAiDecision(proposed, all, hand, null, true, Rank.Eight, context)!;
+  assert.equal(result.type, PatternType.Straight);
+  assert.equal(result.rank, Rank.Five);
+  assert.equal(result.cards.length, 5);
+  assert.ok(result.cards.every(c => c.rank !== Rank.Eight || c.suit !== Suit.Heart),
+    'same-strength natural lead keeps both wildcards');
+  for (const rank of [Rank.King, Rank.Jack]) {
+    assert.ok(result.cards.every(c => c.rank !== rank), 'does not dismantle a natural bomb');
+  }
+  context.players[1].cardCount = 2;
+  assert.equal(enforceTeamStrategy(proposed, [proposed], hand, null, true, Rank.Eight, context), proposed,
+    'opening conservation must not govern reported endgames');
+  assert.equal(enforceTeamStrategy(proposed, [proposed], proposed.cards, null, true, Rank.Eight, context), proposed,
+    'a whole-hand finish still takes precedence');
+  context.players[1].cardCount = 27;
+  context.lastPlayPlayerIndex = 1;
+  const last: CardPattern = { type: PatternType.Straight, rank: Rank.Four, length: 5, cards: [] };
+  assert.equal(enforceTeamStrategy(proposed, [proposed], hand, last, false, Rank.Eight, context), proposed,
+    'the change does not ban spending wildcards to follow');
+});
