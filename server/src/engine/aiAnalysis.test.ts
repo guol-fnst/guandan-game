@@ -7,7 +7,7 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
-  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo,
+  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost,
 } from './aiAnalysis';
 import { llmFindBestPlay, parseStrategyPlan } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
@@ -996,4 +996,22 @@ test('reported-count defence keeps the block without dismantling its natural bom
   ctx.players[1].cardCount=3;
   assert.equal(enforceTeamStrategy(tens, all, hand, null, true, 2, ctx), tens,
     'normal leads do not get escalated to bombs');
+});
+
+
+test('takeover routes retain a concrete feed and distinguish guaranteed control from a cheap response', () => {
+  const deck = createDeck();
+  const take = (rank: Rank,n=1) => deck.filter(c=>c.rank===rank).slice(0,n);
+  const hand=[...take(16),...take(12),...take(3,2)];
+  const ctx=contextFor([hand,[...take(13,2),...take(7)],take(5,2),[...take(11,2),...take(9)]]);
+  ctx.lastPlayPlayerIndex=1;
+  const all=generateLegalPlays(hand,2),last=generateLegalPlays(take(10),2)[0];
+  const replies=all.filter(p=>p.type===PatternType.Single&&p.rank>=12);
+  const route=buildTeamRoutes(hand,all,replies,last,2,ctx,{},generateLegalPlays).find(r=>r.goal==='takeover_change')!;
+  assert.equal(replies.find(p=>analysisKey(p)===route.actionKey)?.rank,16);
+  assert.equal(route.controlProven,true);
+  assert.ok(route.nextLead);
+  const uncertain=buildTeamRoutes(hand,all,replies,last,2,{...ctx,actionHistory:undefined},{},generateLegalPlays)
+    .find(r=>r.goal==='takeover_change')!;
+  assert.equal(uncertain.controlProven,false);
 });

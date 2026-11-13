@@ -8,6 +8,21 @@ export type ChoosePlay = (
   context: AiDecisionContext,
 ) => CardPattern | null;
 
+export function resourceCost(hand: Card[], play: CardPattern, level: number) {
+  const used = new Set(play.cards.map(c => c.id));
+  const remaining = hand.filter(c => !used.has(c.id));
+  const held = rankCounts(hand.filter(c => !(c.rank === level && c.suit === Suit.Heart)));
+  const rest = rankCounts(remaining.filter(c => !(c.rank === level && c.suit === Suit.Heart)));
+  const counts = rankCounts(remaining);
+  return {
+    broken_natural_bombs: [...held].filter(([rank,n]) => n >= 4 && (rest.get(rank) || 0) > 0
+      && (rest.get(rank) || 0) < n).map(([rank]) => rank),
+    remaining_low_singletons: remaining.filter(c => effectiveRank(c.rank, level) < Rank.Queen
+      && counts.get(c.rank) === 1).length,
+    remaining_high_cards: remaining.filter(c => effectiveRank(c.rank, level) >= effectiveRank(Rank.Ace, level)).length,
+  };
+}
+
 export interface TurnEstimate {
   turns: number;
   exact: boolean;
@@ -194,11 +209,18 @@ export function buildTeamRoutes(
         if (lead) routes.push({ goal: 'feed_partner', actionKey: analysisKey(lead), interceptSeats, reason });
       } else {
         const feedIds = new Set(feed.cards.map(card => card.id));
+        const costs = new Map(candidates.map(p => [p, resourceCost(hand, p, level).broken_natural_bombs.length]));
         const takeover = candidates.filter(play => !play.cards.some(card => feedIds.has(card.id)))
-          .sort((a, b) => isBombPattern(a) !== isBombPattern(b) ? Number(isBombPattern(a)) - Number(isBombPattern(b))
-            : effectiveRank(a.rank, level) - effectiveRank(b.rank, level))[0];
+          .sort((a, b) => {
+            const lock = (p: CardPattern) => Number(publicControlEvidence(p, hand, level, context)?.unbeatable === true);
+            const resource = (p: CardPattern) => costs.get(p)!;
+            return lock(b) - lock(a) || resource(a) - resource(b)
+              || Number(isBombPattern(a)) - Number(isBombPattern(b))
+              || effectiveRank(a.rank, level) - effectiveRank(b.rank, level);
+          })[0];
         if (takeover) routes.push({ goal: 'takeover_change', actionKey: analysisKey(takeover), interceptSeats,
           nextLead: { type: feed.type, rank: feed.rank, length: feed.length },
+          controlProven: publicControlEvidence(takeover, hand, level, context)?.unbeatable === true,
           reason: `接管后保留送牌；必须先获得牌权，不能假定对手不再压制。${reason}` });
       }
       if (shapes.size >= 2) break;

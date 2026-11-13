@@ -1,6 +1,6 @@
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
-import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo } from './aiAnalysis';
+import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo, resourceCost } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
@@ -198,6 +198,7 @@ function describeActionCost(option: CardPattern, hand: Card[], currentLevel: num
   for (const card of option.cards) used.set(card.rank, (used.get(card.rank) || 0) + 1);
   return {
     remaining_cards: hand.length - option.cards.length,
+    ...resourceCost(hand, option, currentLevel),
     uses_wildcards: option.cards.filter(card => card.rank === currentLevel && card.suit === 'H').length,
     uses_jokers: option.cards.filter(card => card.rank >= Rank.SmallJoker).length,
     breaks_bomb: [...used].some(([rank, count]) => (held.get(rank) || 0) >= 4 && count < (held.get(rank) || 0)),
@@ -293,10 +294,10 @@ ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾�
 决策顺序：
 1. 以本方名次和升级为目标，检查直接走完、对手即将结束与队友接风。
 2. 比较team_routes与其他合法动作的后续。同牌力动作看配牌、王、拆炸代价；附件不增加三带二牌力。开局不浪费配牌拼自然牌能组成的弱牌。
-3. 比较实际剩余结构与牌权：接管后出什么，被压后拿什么回手；出得多不等于更好。队友需要的牌型只能据公开信息判断。
+3. 比较实际剩余结构与牌权：接管后出什么，被压后拿什么回手；出得多不等于更好。比较cost中的拆炸数量、余牌低单和高牌；低单可能仍属于顺子，不能机械惩罚。队友需要的牌型只能据公开信息判断。
 4. 参考模拟：样本少、估计接近或无模拟时不臆造胜率。remainingTurns只是静态拆分，exact也不代表必胜；controlProven才是公开信息的控牌证明。
 5. strategy_memory只是上次执行后的规划提示，每回合重新验证。不能把文字计划当成持牌事实。以当前手牌、verified_resources与结构为准；零张王不得声称留王；不得假设队友知道你的计划。
-下家报单且选择出单、报双且选择出对时，优先足够的最大牌拦截；此原则不强制选该牌型或取消PASS。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
+下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
 从legal_actions返回action_id（跟牌可PASS），strategy_plan写本次执行后的下一步及失效条件，不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
   const lastPlayerSnapshot = context?.players.find(player =>
