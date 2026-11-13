@@ -967,15 +967,39 @@ function blocksReportedSingle(
     && memory.unseen.every(card => effectiveRank(card.rank, level) <= effectiveRank(play.rank, level));
 }
 
+// Higher priority rules run before lower ones. Each rule's conditions retain
+// its defence/team exceptions; paired evidence only selects guarded actions.
+export const AI_POLICY_PRIORITY = {
+  finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
+  reported_defence: 780, partner_cooperation: 770, proven_control: 760,
+  economy: 100, urgent_interception: 780, paired_outcome: 50,
+} as const;
+export interface AiPolicyCorrection {
+  rule: keyof typeof AI_POLICY_PRIORITY;
+  priority: number;
+  from: string;
+  to: string;
+}
+function policyAction(play: CardPattern | null): string {
+  return play ? `${play.type}:${play.rank}:${play.cards.length}` : 'PASS';
+}
+
 /** Enforced for both LLM replies and local fallback; explanations alone cannot
  * authorize overtaking the partner or spending a stronger equivalent group. */
 export function enforceTeamStrategy(
   proposed: CardPattern | null, candidates: CardPattern[], hand: Card[],
   last: CardPattern | null, free: boolean, level: number,
   context?: AiDecisionContext, analysis?: DecisionAnalysis,
+  onCorrection?: (correction: AiPolicyCorrection) => void,
 ): CardPattern | null {
+  const changed = (from: CardPattern | null, to: CardPattern | null, rule: AiPolicyCorrection['rule']) => {
+    if (onCorrection && from !== to && (from ? analysisKey(from) : 'PASS') !== (to ? analysisKey(to) : 'PASS')) {
+      onCorrection?.({ rule, priority: AI_POLICY_PRIORITY[rule], from: policyAction(from), to: policyAction(to) });
+    }
+    return to;
+  };
   const finish = candidates.find(play => play.cards.length === hand.length);
-  if (finish) return finish;
+  if (finish) return changed(proposed, finish, 'finish');
   if (!proposed) {
     return null;
   }
@@ -999,7 +1023,9 @@ export function enforceTeamStrategy(
         || play.cards.filter(c => c.rank === card.rank).length === held.get(card.rank)!.length));
     const equal = natural.filter(p => p.rank === proposed!.rank);
     const replacement = orderCandidates(equal.length ? equal : natural, hand, level, free, context, analysis)[0];
-    if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) proposed = replacement;
+    if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) {
+      proposed = changed(proposed, replacement, 'opening_resource')!;
+    }
   }
   const leader = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);
   const catchesOpponent = context && leader?.finishRank != null
@@ -1009,7 +1035,7 @@ export function enforceTeamStrategy(
   if (!free && context && analysis?.handTurns.exact && analysis.handTurns.turns === 1
     && !immediateThreat && !catchesOpponent
     && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
-    && !materiallyBetterSimulation(proposed, null, analysis)) return null;
+    && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'ready_exit');
   const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
   if (!free && context && isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2
     && !catchesOpponent
@@ -1017,18 +1043,22 @@ export function enforceTeamStrategy(
       && ((player.relation === 'opponent' && player.cardCount <= 5)
         || (player.relation === 'partner' && player.cardCount <= 2)))
     && opponentControlStreak(context) < 2
-    && !materiallyBetterSimulation(proposed, null, analysis)) return null;
+    && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'bomb_structure');
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context);
   if (!reportAdjusted) return null;
   // Reported-count interception is a strong prior, not a legality rule.
   // A paired team-outcome comparison can justify retaining a smaller control.
-  if (!materiallyBetterSimulation(proposed, reportAdjusted, analysis)) proposed = reportAdjusted;
+  if (!materiallyBetterSimulation(proposed, reportAdjusted, analysis)) {
+    proposed = changed(proposed, reportAdjusted, 'reported_defence')!;
+  }
   const partnerLed = !free && last && context
     && context.lastPlayPlayerIndex === context.partnerSeatIndex;
   if (partnerLed && last) {
     if (!blocksReportedSingle(proposed, last, hand, level, context)
       && !materiallyBetterSimulation(proposed, null, analysis)
-      && !productivePartnerTakeover(proposed, hand, generateLegalPlays(hand, level), last, level, context)) return null;
+      && !productivePartnerTakeover(proposed, hand, generateLegalPlays(hand, level), last, level, context)) {
+      return changed(proposed, null, 'partner_cooperation');
+    }
   }
   // Compare the actual residual hand across shapes, not just bomb size.
   // A public-card lock preserves the interception, including after a player
@@ -1047,7 +1077,7 @@ export function enforceTeamStrategy(
       // Re-apply partner/report protections to the actual replacement.
       const guarded = enforceTeamStrategy(control, candidates, hand, last, free, level, context, analysis);
       if (guarded && !isBombPattern(guarded)
-        && publicControlEvidence(guarded, hand, level, context)?.unbeatable === true) return guarded;
+        && publicControlEvidence(guarded, hand, level, context)?.unbeatable === true) return changed(proposed, guarded, 'proven_control');
     }
   }
   // With only a few low singles left and no recapture card, a higher probe
@@ -1078,7 +1108,7 @@ export function enforceTeamStrategy(
       && !materiallyBetterSimulation(lower, null, analysis)
       && !productivePartnerTakeover(lower, hand, generateLegalPlays(hand, level), last, level, context)) continue;
     const adjusted = enforceNextPlayerReport(lower, candidates, level, context);
-    return materiallyBetterSimulation(lower, adjusted, analysis) ? lower : adjusted;
+    return changed(proposed, materiallyBetterSimulation(lower, adjusted, analysis) ? lower : adjusted, 'economy');
   }
   return proposed;
 }
@@ -1090,11 +1120,19 @@ export function finalizeAiDecision(
   proposed: CardPattern | null, candidates: CardPattern[], hand: Card[],
   last: CardPattern | null, free: boolean, level: number,
   context?: AiDecisionContext, analysis?: DecisionAnalysis, ruleFallback?: CardPattern | null,
+  onCorrections?: (corrections: AiPolicyCorrection[]) => void,
 ): CardPattern | null {
-  const guard = (play: CardPattern | null) => enforceTeamStrategy(
-    play, candidates, hand, last, free, level, context, analysis,
-  );
+  let recent: AiPolicyCorrection[] = [];
+  const guard = (play: CardPattern | null) => {
+    if (!onCorrections) return enforceTeamStrategy(play, candidates, hand, last, free, level, context, analysis);
+    recent = [];
+    return enforceTeamStrategy(play, candidates, hand, last, free, level, context, analysis,
+      correction => { recent.push(correction); });
+  };
   let selected = guard(proposed);
+  let accepted = recent;
+  const complete = () => { onCorrections?.(accepted); return selected; };
+
   // A model PASS without rollout evidence still needs to respect public tempo.
   // Prefer an intact ordinary response with a real group left to lead; spend
   // bombs only through the local defence policy or a last reported-single stop.
@@ -1126,10 +1164,17 @@ export function finalizeAiDecision(
       if (!response && leader.cardCount === 1 && passPosition(context).closesTrick) {
         response = [...candidates].sort((a, b) => canBeat(a, b, level) ? 1 : canBeat(b, a, level) ? -1 : 0)[0] || null;
       }
-      if (response && candidates.some(play => analysisKey(play) === analysisKey(response))) selected = guard(response);
+      if (response && candidates.some(play => analysisKey(play) === analysisKey(response))) {
+        const result = guard(response);
+        if (result) {
+          accepted = [...accepted, { rule: 'urgent_interception', priority: AI_POLICY_PRIORITY.urgent_interception,
+            from: policyAction(selected), to: policyAction(response) }, ...recent];
+          selected = result;
+        }
+      }
     }
   }
-  if (selected?.cards.length === hand.length || !analysis) return selected;
+  if (selected?.cards.length === hand.length || !analysis) return complete();
   const resultOf = (play: CardPattern | null) => play
     ? analysis.candidates[analysisKey(play)]?.simulation : analysis.passSimulation;
   // Compare the outcomes of actual guarded actions, not their pre-guard scores.
@@ -1143,9 +1188,13 @@ export function finalizeAiDecision(
     const guarded = guard(alternative);
     const result = resultOf(guarded);
     if (reliablyBetterSimulation(result, baseline)
-      && (!resultOf(selected) || result!.meanReward > resultOf(selected)!.meanReward)) selected = guarded;
+      && (!resultOf(selected) || result!.meanReward > resultOf(selected)!.meanReward)) {
+      accepted = [{ rule: 'paired_outcome', priority: AI_POLICY_PRIORITY.paired_outcome,
+        from: policyAction(proposed), to: policyAction(alternative) }, ...recent];
+      selected = guarded;
+    }
   }
-  return selected;
+  return complete();
 }
 
 export function groundStrategyPlan(
@@ -1173,6 +1222,7 @@ export interface AiDecisionTrace {
   routes?: string[];
   model?: string;
   corrected: boolean;
+  corrections?: AiPolicyCorrection[];
 }
 
 export async function findSmartPlay(
@@ -1246,6 +1296,7 @@ export async function findSmartPlay(
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
   const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
+  let corrections: AiPolicyCorrection[] = [];
   const routeGoals = (play: CardPattern | null) => (analysis.teamRoutes || [])
     .filter(route => route.actionKey === (play ? analysisKey(play) : null)).map(route => route.goal);
 
@@ -1278,14 +1329,14 @@ export async function findSmartPlay(
       // undefined means the model was unavailable/invalid; null is an intentional pass.
       if (llmResult !== undefined) {
         const final = finalizeAiDecision(
-          llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
+          llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
         );
         // A changed action invalidates the model's continuation, including PASS.
         if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
           const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
           if (grounded) onPlan?.(grounded);
         }
-        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final),
+        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
       }
@@ -1293,9 +1344,9 @@ export async function findSmartPlay(
   }
 
   const final = finalizeAiDecision(
-    fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult,
+    fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
   );
-  onDecision?.({ source: 'local', routes: routeGoals(final), corrected:
+  onDecision?.({ source: 'local', routes: routeGoals(final), corrections, corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;
 }

@@ -952,3 +952,32 @@ test('wildcard dominance requires the same declaration and all original natural 
   assert.deepEqual(removeWastefulWildRealizations([waste], 8), [waste],
     'keep wildcard actions that have no equivalent natural alternative');
 });
+
+
+test('policy priority explains finish and defence overrides without changing selected actions', () => {
+  const hand = rankedHand([3, 3, 3]);
+  const plays = generateLegalPlays(hand, 2);
+  const changes: any[] = [];
+  const finished = finalizeAiDecision(null, plays, hand, null, true, 2, undefined, undefined, undefined,
+    notes => changes.push(...notes));
+  assert.equal(finished?.cards.length, 3);
+  assert.deepEqual(changes.map(c => c.rule), ['finish']);
+  assert.equal(changes[0].from, 'PASS');
+
+  const singles = rankedHand([14, 3, 7]);
+  const legal = generateLegalPlays(singles, 3);
+  const ace = legal.find(p => p.type === PatternType.Single && p.rank === 14)!;
+  const level = legal.find(p => p.type === PatternType.Single && p.rank === 3)!;
+  const context = contextFor([singles, [], [], []]);
+  context.players[1].cardCount = 1;
+  const defence: any[] = [];
+  const final = finalizeAiDecision(ace, legal, singles, null, true, 3, context, undefined, undefined,
+    notes => defence.push(...notes));
+  assert.equal(final, level);
+  assert.ok(defence.some(c => c.rule === 'reported_defence'));
+  assert.ok(defence.every(c => c.from !== c.to));
+  const unchanged: any[] = [];
+  assert.equal(finalizeAiDecision(level, legal, singles, null, true, 3, context, undefined, undefined,
+    notes => unchanged.push(...notes)), level);
+  assert.equal(unchanged.length, 0, 'do not invent corrections for an unchanged model decision');
+});
