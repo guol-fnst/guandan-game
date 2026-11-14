@@ -294,7 +294,7 @@ export async function llmFindBestPlay(
 ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾及阻止接风。检查被压后的回手机会，不能把静态两手当成连续两手必走。' : '中前盘重点：整理整手结构与回手机会，比较消耗炸弹/配牌/王的真实收益。'}
 统一实战决策指南：
 ${STRATEGY_GUIDE}
-证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。模拟样本不足或接近时不臆造胜率。
+证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
 strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
 从legal_actions返回action_id（跟牌可PASS），strategy_plan写本次执行后的下一步及失效条件，不复述长推理，不声称持有输入没有的炸弹或直接走完。`;

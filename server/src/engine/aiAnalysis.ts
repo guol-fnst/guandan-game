@@ -28,9 +28,14 @@ export function resourceCost(hand: Card[], play: CardPattern, level: number) {
 export function tailControlCost(hand: Card[], play: CardPattern, allPlays: CardPattern[], level: number): number {
   if (isBombPattern(play) || hand.length > 12 || play.cards.length === hand.length
     || !play.cards.some(c => effectiveRank(c.rank, level) >= effectiveRank(Rank.Ace, level))) return 0;
-  const cost = resourceCost(hand, play, level);
-  if (cost.remaining_high_cards) return 0;
   const used = new Set(play.cards.map(c => c.id));
+  const spentStrength = Math.max(...play.cards.map(c => effectiveRank(c.rank, level)));
+  // A lower high card is not a replacement for the control just spent. In
+  // particular, a level singleton cannot replace a pair of big jokers.
+  const reserves = allPlays.filter(p => p.cards.every(c => !used.has(c.id)));
+  if (reserves.some(p => isBombPattern(p)
+    || ([PatternType.Single, PatternType.Pair].includes(p.type)
+      && effectiveRank(p.rank, level) >= spentStrength))) return 0;
   const grouped = new Set(allPlays.filter(p => p.cards.length > 1 && p.cards.every(c => !used.has(c.id)))
     .flatMap(p => p.cards.map(c => c.id)));
   const stranded = hand.filter(c => !used.has(c.id) && !grouped.has(c.id)
@@ -56,7 +61,7 @@ export interface DecisionAnalysis {
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
   handTurns: TurnEstimate;
-  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
+  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; replyFinishRisk?: { samples: number; rate: number }; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
 }
@@ -774,6 +779,32 @@ export async function analyzeDecision(
   for (const route of analysis.teamRoutes) {
     const play = candidates.find(p => analysisKey(p) === route.actionKey);
     if (play && !analysis.candidates[route.actionKey!]) estimateCandidate(play);
+  }
+  // One-ply terminal threats are cheap enough to inspect even when the full
+  // active deal is too large for rollout. All candidates face the same deals.
+  if (context && options.generateReplies
+    && context.players.some(p => p.relation === 'opponent' && p.finishRank === null && p.cardCount <= 5)) {
+    const knowledge = buildPublicKnowledge(hand, context);
+    const riskDeadline = Math.min(deadline, performance.now() + 40);
+    let samples = 0;
+    const hits = candidates.map(() => 0);
+    if (knowledge) for (; samples < 8 && performance.now() < riskDeadline;) {
+      const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, options.random, 2);
+      if (!deal) break;
+      const exits = context.players.filter(p => p.relation === 'opponent' && p.finishRank === null && p.cardCount <= 5)
+        .flatMap(p => options.generateReplies!(deal[p.seatIndex], level)
+          .filter(reply => reply.cards.length === p.cardCount));
+      if (performance.now() >= riskDeadline) break;
+      candidates.forEach((play, i) => {
+        if (play.cards.length < hand.length && exits.some(reply => canBeat(reply, play, level))) hits[i]++;
+      });
+      samples++;
+    }
+    if (samples >= 8) candidates.forEach((play, i) => {
+      if (analysis.candidates[analysisKey(play)]) {
+        analysis.candidates[analysisKey(play)].replyFinishRisk = { samples, rate: hits[i] / samples };
+      }
+    });
   }
   const finish = () => {
     for (const route of analysis.teamRoutes || []) route.simulation = route.actionKey

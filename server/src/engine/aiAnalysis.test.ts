@@ -1091,3 +1091,58 @@ test('whole-hand strategy briefing generalizes natural level assets across all t
     assert.equal(short.level_group_options.triple,false);
   }
 });
+
+test('residual control comparison preserves a probe instead of spending both jokers as wings at every level', async () => {
+  const deck = createDeck();
+  for (let level = Rank.Two; level <= Rank.Ace; level++) {
+    const rank: Rank = level === Rank.Nine ? Rank.Eight : Rank.Nine;
+    const low: Rank = level === Rank.Three ? Rank.Four : Rank.Three;
+    const hand: Card[] = [
+      ...deck.filter(c => c.rank === Rank.BigJoker),
+      deck.find(c => c.rank === level && c.suit === Suit.Diamond)!,
+      deck.find(c => c.rank === level && c.suit === Suit.Heart)!,
+      ...deck.filter(c => c.rank === rank).slice(0, 2),
+      deck.find(c => c.rank === low)!,
+    ];
+    const all = generateLegalPlays(hand, level);
+    const waste: CardPattern = all.find(p => p.type === PatternType.TriplePair && p.rank === rank
+      && p.cards.filter(c => c.rank === Rank.BigJoker).length === 2)!;
+    assert.ok(waste);
+    assert.equal(tailControlCost(hand, waste, all, level), 160,
+      'a level singleton cannot stand in for the pair of jokers spent');
+    const analysis = await analyzeDecision(hand, all, all, null, level, undefined, findBestPlay, { budgetMs: 100 });
+    let corrections: any[] = [];
+    const selected: CardPattern = finalizeAiDecision(waste, all, hand, null, true, level, undefined, analysis,
+      undefined, values => { corrections = values; })!;
+    assert.ok(corrections.some(c => c.rule === 'continuation'));
+    assert.ok(selected.cards.every(c => c.rank !== Rank.BigJoker));
+    assert.equal(analysis.candidates[analysisKey(selected)].continuation?.tailControlCost, 0);
+    const used = new Set(selected.cards.map(c => c.id));
+    const plan = groundStrategyPlan(hand, all, selected, analysis)!;
+    assert.ok(plan.next);
+    assert.equal(hand.filter(c => !used.has(c.id) && c.rank === Rank.BigJoker).length, 2);
+  }
+});
+
+test('one-ply reply risk sees a whole-hand enemy response using public cards, without claiming certainty of outcome', async () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n: number) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(Rank.BigJoker, 2), ...take(Rank.Nine, 2),
+    deck.find(c => c.rank === Rank.Two && c.suit === Suit.Heart)!,
+    deck.find(c => c.rank === Rank.Two && c.suit === Suit.Diamond)!, ...take(Rank.Seven, 1)];
+  const enemy = [...take(Rank.King, 3), ...deck.filter(c => c.rank === Rank.Four).slice(0, 2)];
+  const ctx = contextFor([hand, enemy, [], []]);
+  ctx.players[2].finishRank = 1;
+  ctx.players[3].finishRank = 2;
+  const all = generateLegalPlays(hand, Rank.Two);
+  const waste = all.find(p => p.type === PatternType.TriplePair && p.cards.some(c => c.rank === Rank.BigJoker))!;
+  const probe = all.find(p => p.type === PatternType.Single && p.rank === Rank.Seven)!;
+  const analysis = await analyzeDecision(hand, all, [waste, probe], null, Rank.Two, ctx, findBestPlay,
+    { budgetMs: 300, maxSamples: 0, generateReplies: generateLegalPlays, random: () => 0.5 });
+  assert.deepEqual(analysis.candidates[analysisKey(waste)].replyFinishRisk, { samples: 8, rate: 1 });
+  assert.deepEqual(analysis.candidates[analysisKey(probe)].replyFinishRisk, { samples: 8, rate: 0 });
+  const expired = await analyzeDecision(hand, all, [waste], null, Rank.Two, ctx, findBestPlay,
+    { budgetMs: 0, generateReplies: generateLegalPlays });
+  assert.equal(expired.candidates[analysisKey(waste)].replyFinishRisk, undefined,
+    'an unmeasured risk must not be presented as zero');
+});

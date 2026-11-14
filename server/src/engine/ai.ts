@@ -743,10 +743,12 @@ function orderCandidates(
       && after.continuation.largestRemainingGroup <= 2 && after.remainingTurns.turns >= 3 ? 180 : 0;
     const urgent = context?.players.some(p => p.finishRank === null
       && ((p.relation === 'opponent' && p.cardCount <= 5) || (p.relation === 'partner' && p.cardCount <= 2)));
-    const tailCost = urgent ? 0 : (after?.continuation?.tailControlCost
+    const tailCost = urgent && !isFreePlay ? 0 : (after?.continuation?.tailControlCost
       ?? tailControlCost(hand, play, wholeHandPlays, currentLevel));
+    const replyRisk = after?.replyFinishRisk;
+    const replyCost = replyRisk && replyRisk.samples >= 8 ? 240 * replyRisk.rate : 0;
     scores.set(play, scorePlay(play, hand, currentLevel, isFreePlay, context, protectedCardIds, teamPlan)
-      + recaptureBonus(play) + structureScore + looseBonus - strandedAfterBomb - tailCost
+      + recaptureBonus(play) + structureScore + looseBonus - strandedAfterBomb - tailCost - replyCost
       + (endgameRoutes[analysisKey(play)]?.score || 0)
       + scoreTeamPlan(play, hand, wholeHandPlays, currentLevel, isFreePlay, teamPlan, context, memory));
   }
@@ -984,7 +986,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, urgent_interception: 780, paired_outcome: 50,
+  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1204,6 +1206,38 @@ export function finalizeAiDecision(
   if (selected?.cards.length === hand.length || !analysis) return complete();
   const resultOf = (play: CardPattern | null) => play
     ? analysis.candidates[analysisKey(play)]?.simulation : analysis.passSimulation;
+  // Reconcile a model's lead with the real residual position before persisting
+  // any plan. This finite prior never substitutes a passive action for an
+  // interception, a proven lock or a measured superior team outcome.
+  if (free && selected && hand.length <= 12
+    && publicControlEvidence(selected, hand, level, context)?.unbeatable !== true
+    && !analysis.candidates[analysisKey(selected)]?.endgameRoute?.controlProven) {
+    const before = analysis.candidates[analysisKey(selected)];
+    const cost = (play: CardPattern) => {
+      const value = analysis.candidates[analysisKey(play)];
+      return (value?.continuation?.tailControlCost || 0)
+        + (value?.replyFinishRisk ? value.replyFinishRisk.rate * 240 : 0);
+    };
+    if ((before?.continuation?.tailControlCost || 0) >= 160 && before?.remainingTurns.exact) {
+      for (const alternative of orderCandidates(candidates, hand, level, free, context, analysis)) {
+        const after = analysis.candidates[analysisKey(alternative)];
+        if (!after?.remainingTurns.exact || after.remainingTurns.turns > before.remainingTurns.turns + 1
+          || cost(selected) - cost(alternative) < 160
+          || (before.replyFinishRisk && (!after.replyFinishRisk
+            || after.replyFinishRisk.rate > before.replyFinishRisk.rate))
+          || materiallyBetterSimulation(selected, alternative, analysis)) continue;
+        const guarded = guard(alternative);
+        // A protection that changes this alternative invalidates the measured
+        // continuation. Keep the original decision rather than mix two plans.
+        if (!guarded || analysisKey(guarded) !== analysisKey(alternative)
+          || cost(selected) - cost(guarded) < 160) continue;
+        accepted = [...accepted, { rule: 'continuation', priority: AI_POLICY_PRIORITY.continuation,
+          from: policyAction(selected), to: policyAction(alternative) }, ...recent];
+        selected = guarded;
+        break;
+      }
+    }
+  }
   // Compare the outcomes of actual guarded actions, not their pre-guard scores.
   // Keep the original baseline fixed: several marginal gains cannot chain into
   // an override, and a corrected action cannot hide a better later alternative.
@@ -1338,7 +1372,6 @@ export async function findSmartPlay(
   // two attempts, with the existing 90s turn watchdog/stale-state guard intact.
   for (const model of [primary, backup]) {
     try {
-      let plan: AiStrategyPlan | undefined;
       const llmResult = await llmFindBestPlay(
         hand,
         legalPlays,
@@ -1351,18 +1384,17 @@ export async function findSmartPlay(
         equivalentCounts,
         handCombinations.plays,
         handCombinations.equivalentCounts,
-        value => { plan = value; },
+        undefined,
       );
       // undefined means the model was unavailable/invalid; null is an intentional pass.
       if (llmResult !== undefined) {
         const final = finalizeAiDecision(
           llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
         );
-        // A changed action invalidates the model's continuation, including PASS.
-        if (plan && (final ? analysisKey(final) : 'PASS') === (llmResult ? analysisKey(llmResult) : 'PASS')) {
-          const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
-          if (grounded) onPlan?.(grounded);
-        }
+        // Rebuild from the executed action even when a guard changed it or the
+        // model omitted a plan. Model prose is never evidence of retained cards.
+        const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
+        if (grounded) onPlan?.(grounded);
         onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
@@ -1373,6 +1405,8 @@ export async function findSmartPlay(
   const final = finalizeAiDecision(
     fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
   );
+  const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
+  if (grounded) onPlan?.(grounded);
   onDecision?.({ source: 'local', routes: routeGoals(final), corrections, corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;
