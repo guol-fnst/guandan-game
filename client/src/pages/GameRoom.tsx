@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuthStore, useGameStore } from '../stores/gameStore';
 import { getSocket } from '../hooks/useSocket';
 import { GameState, GamePhase, Card, CardPattern, PlayerInfo as PlayerInfoType, RoundResult, SpectatorHands } from '../sharedTypes';
@@ -16,6 +16,7 @@ export default function GameRoom() {
   const [searchParams] = useSearchParams();
   const spectatorMode = searchParams.get('spectator') === '1';
   const navigate = useNavigate();
+  const location = useLocation();
   const { userId, isLoggedIn, logout } = useAuthStore();
   const {
     gameState, setGameState, mySeatIndex, setMySeatIndex,
@@ -34,6 +35,60 @@ export default function GameRoom() {
   const [spectatorDialogOpen, setSpectatorDialogOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
   const [actionSecondsLeft, setActionSecondsLeft] = useState<number | null>(null);
+  const [inviteNotice, setInviteNotice] = useState('');
+  const [joinPassword, setJoinPassword] = useState('');
+  const [joinPasswordError, setJoinPasswordError] = useState('');
+  const [passwordPromptOpen, setPasswordPromptOpen] = useState(false);
+
+  const buildShareUrl = () => {
+    const url = new URL(`game/${encodeURIComponent(roomId || '')}`, new URL(import.meta.env.BASE_URL, window.location.origin));
+    url.searchParams.set('invite', '1');
+    if (!waiting) url.searchParams.set('spectator', '1');
+    return url.toString();
+  };
+
+  const copyInviteLink = async (url: string) => {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+    await navigator.clipboard.writeText(url);
+  };
+
+  const handleShareRoom = async () => {
+    const url = buildShareUrl();
+    const shareData = {
+      title: waiting ? '加入我的掼蛋牌局' : '观看我的掼蛋牌局',
+      text: waiting ? '点击链接登录后加入房间，房主开局时会自动补 AI。' : '点击链接登录后进入房间观战。',
+      url,
+    };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+        setInviteNotice('邀请已打开，可以发送给朋友');
+      } else {
+        await copyInviteLink(url);
+        setInviteNotice('邀请链接已复制');
+      }
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
+      try {
+        await copyInviteLink(url);
+        setInviteNotice('邀请链接已复制');
+      } catch {
+        setInviteNotice(`复制失败，请分享当前地址：${url}`);
+      }
+    }
+  };
+
+  const submitRoomPassword = () => {
+    if (!joinPassword.trim()) {
+      setJoinPasswordError('请输入房间密码');
+      return;
+    }
+    setJoinPasswordError('');
+    getSocket()?.emit(spectatorMode ? 'join_spectator' : 'join_room', {
+      roomId,
+      password: joinPassword,
+    });
+  };
 
   useEffect(() => {
     const socket = getSocket();
@@ -86,6 +141,12 @@ export default function GameRoom() {
   }, [reportNotice]);
 
   useEffect(() => {
+    if (!inviteNotice) return;
+    const timer = window.setTimeout(() => setInviteNotice(''), 5000);
+    return () => window.clearTimeout(timer);
+  }, [inviteNotice]);
+
+  useEffect(() => {
     const deadline = gameState?.actionDeadline;
     const hasTimedAction = gameState?.phase === GamePhase.Playing
       || gameState?.phase === GamePhase.ReturnTribute;
@@ -104,7 +165,8 @@ export default function GameRoom() {
 
   useEffect(() => {
     if (!isLoggedIn) {
-      navigate('/');
+      const next = `${location.pathname}${location.search}`;
+      navigate(`/?next=${encodeURIComponent(next)}`);
       return;
     }
 
@@ -114,6 +176,8 @@ export default function GameRoom() {
     socket.emit(spectatorMode ? 'join_spectator' : 'join_room', { roomId });
 
     const onGameState = (state: GameState) => {
+      setPasswordPromptOpen(false);
+      setJoinPasswordError('');
       setGameState(state);
       setDeclarations([]);
       setWaiting(state.phase === 'waiting');
@@ -195,6 +259,11 @@ export default function GameRoom() {
 
 
     const onError = (data: { message: string }) => {
+      if (data.message === '房间密码错误') {
+        setPasswordPromptOpen(true);
+        setJoinPasswordError(current => current ? '密码错误，请重试' : '该房间需要密码');
+        return;
+      }
       setErrorMsg(data.message);
       setTimeout(() => setErrorMsg(''), 3000);
     };
@@ -235,7 +304,7 @@ export default function GameRoom() {
       socket.off('hint_result', onHintResult);
       socket.off('spectator_removed', onSpectatorRemoved);
     };
-  }, [roomId, spectatorMode]);
+  }, [roomId, spectatorMode, isLoggedIn, userId, location.pathname, location.search]);
 
   useEffect(() => {
     if (!gameState || !userId || spectatorMode) return;
@@ -360,6 +429,7 @@ export default function GameRoom() {
   return (
     <div className={`game-room${waiting ? ' is-waiting' : ''}${isSpectator ? ' is-spectator' : ''}`} style={styles.container}>
       {reportNotice && <div className="card-report-notice" role="status" aria-live="polite">{reportNotice}</div>}
+      {inviteNotice && <div style={styles.inviteNotice} role="status" aria-live="polite">{inviteNotice}</div>}
       <div className="game-table" style={styles.table}>
         <div className="duel-scoreboard" aria-label="双方当前级牌">
           <div className={`duel-score-team ${isSpectator ? (leadingTeam === 0 ? 'is-leading' : 'is-trailing') : (ownIsLeading ? 'is-leading' : 'is-trailing')}`}>
@@ -389,6 +459,9 @@ export default function GameRoom() {
             观战 {gameState?.spectators.length || 0}
           </button>
           <div className="room-exit-actions">
+            <button type="button" className="btn-secondary" onClick={handleShareRoom}>
+              {waiting ? '邀请朋友' : '分享观战'}
+            </button>
             <button
               className="btn-danger"
               onClick={handleLeaveRoom}
@@ -641,6 +714,31 @@ export default function GameRoom() {
           </div>
         </div>}
 
+        {passwordPromptOpen && (
+          <div style={styles.modal}>
+            <div style={{ ...styles.modalContent, width: 'min(360px, calc(100vw - 32px))' }}>
+              <h3 style={{ marginBottom: 10 }}>输入房间密码</h3>
+              <p style={{ marginBottom: 14, color: 'rgba(255,255,255,.72)', fontSize: 13 }}>
+                {spectatorMode ? '输入密码后进入观战' : '输入密码后加入朋友的牌局'}
+              </p>
+              <input
+                autoFocus
+                type="password"
+                value={joinPassword}
+                onChange={event => setJoinPassword(event.target.value)}
+                onKeyDown={event => event.key === 'Enter' && submitRoomPassword()}
+                placeholder="房间密码"
+                style={{ width: '100%', marginBottom: 10 }}
+              />
+              {joinPasswordError && <p style={{ color: '#ff8b8b', fontSize: 13, marginBottom: 10 }}>{joinPasswordError}</p>}
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                <button type="button" className="btn-primary" onClick={submitRoomPassword}>进入房间</button>
+                <button type="button" className="btn-secondary" onClick={() => navigate('/lobby')}>返回大厅</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Round result modal */}
         {declarations.length > 0 && <div style={styles.modal}><div style={{ ...styles.modalContent, maxHeight: '80vh', overflowY: 'auto' }}>
           <h3>确认逢人配替代方式</h3>
@@ -781,5 +879,20 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
     border: '1px solid rgba(255,255,255,0.1)',
+  },
+  inviteNotice: {
+    position: 'fixed',
+    top: 12,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 260,
+    maxWidth: 'min(560px, calc(100vw - 24px))',
+    padding: '9px 16px',
+    borderRadius: 9,
+    background: 'rgba(11, 50, 31, .96)',
+    border: '1px solid rgba(255, 214, 107, .55)',
+    color: '#ffe09a',
+    fontSize: 13,
+    overflowWrap: 'anywhere',
   },
 };
