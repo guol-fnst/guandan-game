@@ -45,6 +45,33 @@ export interface AiStrategyMemory extends AiStrategyPlan {
   executed: string;
 }
 
+export interface AiDecisionCheck {
+  goal: 'direct_finish' | 'block_opponent' | 'help_partner' | 'own_route' | 'organize' | 'hold_control';
+  resourceUse: 'preserve' | 'spend_justified' | 'none';
+  worstReply: string;
+  whyNotLowerCost: string;
+}
+
+const DECISION_GOALS = new Set<AiDecisionCheck['goal']>([
+  'direct_finish', 'block_opponent', 'help_partner', 'own_route', 'organize', 'hold_control',
+]);
+const RESOURCE_USES = new Set<AiDecisionCheck['resourceUse']>(['preserve', 'spend_justified', 'none']);
+
+/** A compact visible audit, not hidden chain-of-thought. Accepted live model
+ * decisions must classify their goal, resource use and dangerous reply. */
+export function parseDecisionCheck(value: unknown): AiDecisionCheck | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const check = value as Record<string, unknown>;
+  if (!DECISION_GOALS.has(check.goal as AiDecisionCheck['goal'])
+    || !RESOURCE_USES.has(check.resource_use as AiDecisionCheck['resourceUse'])
+    || typeof check.worst_reply !== 'string' || typeof check.why_not_lower_cost !== 'string') return undefined;
+  const worstReply = check.worst_reply.trim().slice(0, 40);
+  const whyNotLowerCost = check.why_not_lower_cost.trim().slice(0, 40);
+  if (!worstReply || !whyNotLowerCost) return undefined;
+  return { goal: check.goal as AiDecisionCheck['goal'],
+    resourceUse: check.resource_use as AiDecisionCheck['resourceUse'], worstReply, whyNotLowerCost };
+}
+
 /** Optional, bounded planning notes; malformed notes never invalidate an action. */
 export function parseStrategyPlan(value: unknown): AiStrategyPlan | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -202,9 +229,18 @@ function describeActionCost(option: CardPattern, hand: Card[], currentLevel: num
     ...resourceCost(hand, option, currentLevel),
     uses_wildcards: option.cards.filter(card => card.rank === currentLevel && card.suit === 'H').length,
     uses_jokers: option.cards.filter(card => card.rank >= Rank.SmallJoker).length,
+    uses_aces: option.cards.filter(card => card.rank === Rank.Ace).length,
     breaks_bomb: [...used].some(([rank, count]) => (held.get(rank) || 0) >= 4 && count < (held.get(rank) || 0)),
     splits_group: [...used].some(([rank, count]) => (held.get(rank) || 0) > count),
   };
+}
+
+function spendsControlResource(option: CardPattern, hand: Card[], currentLevel: number): boolean {
+  const held = new Map<number, number>();
+  for (const card of hand) held.set(card.rank, (held.get(card.rank) || 0) + 1);
+  const cost = describeActionCost(option, hand, currentLevel, held);
+  return cost.uses_wildcards > 0 || cost.uses_jokers > 0 || cost.uses_aces > 0
+    || cost.natural_level_cards_spent > 0 || cost.breaks_bomb;
 }
 
 function compactActionGroups(
@@ -295,9 +331,9 @@ ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾�
 统一实战决策指南：
 ${STRATEGY_GUIDE}
 证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
-strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。
+strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写且与所选实体牌一致；消耗A、王、自然级牌、逢人配或拆炸时resource_use只能是spend_justified。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
-从legal_actions返回action_id（跟牌可PASS），strategy_plan写本次执行后的下一步及失效条件，不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
+从legal_actions返回action_id（跟牌可PASS），decision_check执行固定自检，strategy_plan写本次执行后的下一步及失效条件。不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
   const lastPlayerSnapshot = context?.players.find(player =>
     player.seatIndex === context.lastPlayPlayerIndex
@@ -344,6 +380,8 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
       card_count: hand.length,
       small_jokers: hand.filter(c => c.rank === Rank.SmallJoker).length,
       big_jokers: hand.filter(c => c.rank === Rank.BigJoker).length,
+      aces: hand.filter(c => c.rank === Rank.Ace).length,
+      natural_level_cards: hand.filter(c => c.rank === currentLevel && c.suit !== 'H').length,
       wildcards: hand.filter(c => c.rank === currentLevel && c.suit === 'H').length,
       natural_bombs: [...new Set(hand.map(c => c.rank))].filter(rank =>
         rank < Rank.SmallJoker && hand.filter(c => c.rank === rank && !(c.rank === currentLevel && c.suit === 'H')).length >= 4),
@@ -415,8 +453,8 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
     ),
   };
   const outputFormat = normalizedSelection.provider === 'deepseek'
-    ? '{"action_id":数字或"PASS","brief_reason":"20字内","strategy_plan":{"next":"下一步，32字内","reconsider_when":"放弃条件，32字内"}}'
-    : '{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}';
+    ? '{"action_id":数字或"PASS","brief_reason":"20字内","decision_check":{"goal":"六种目标之一","resource_use":"preserve|spend_justified|none","worst_reply":"20字内","why_not_lower_cost":"20字内"},"strategy_plan":{"next":"下一步，32字内","reconsider_when":"放弃条件，32字内"}}'
+    : '{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","decision_check":{"goal":"direct_finish|block_opponent|help_partner|own_route|organize|hold_control","resource_use":"preserve|spend_justified|none","worst_reply":"最危险应手，40字内","why_not_lower_cost":"为何不用低成本候选，40字内"},"strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}';
   const userPrompt = `请根据以下牌桌输入选择动作：\n${JSON.stringify(input)}\n
 只输出一个紧凑JSON，按以下顺序给出字段：${outputFormat}。不复述牌桌、候选或推理，不加额外字段或Markdown。只有跟牌时可选择PASS。`;
   const promptCharacters = systemPrompt.length + userPrompt.length;
@@ -497,19 +535,35 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
       return undefined;
     }
     const { parsed, action: optionId } = decision;
+    const decisionCheck = parseDecisionCheck(parsed.decision_check);
+    const selectedPlay = optionId === 'PASS' ? null : legalPlays[optionId];
+    const inconsistentResource = decisionCheck && (selectedPlay
+      ? spendsControlResource(selectedPlay, hand, currentLevel)
+        && decisionCheck.resourceUse !== 'spend_justified'
+      : decisionCheck.resourceUse === 'spend_justified');
+    if (context && (!decisionCheck || inconsistentResource)) {
+      recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
+      console.warn('[AI response]', JSON.stringify({
+        provider: normalizedSelection.provider, model: normalizedSelection.model,
+        reason: !decisionCheck ? 'missing_strategy_check' : 'inconsistent_resource_check',
+        round: context.roundNumber, seat: context.selfSeatIndex,
+        action: context.actionHistory?.length,
+      }));
+      return undefined;
+    }
     const reasonSource = parsed.brief_reason ?? parsed.reason;
     const reason = typeof reasonSource === 'string' ? reasonSource.slice(0, 40) : '未提供理由';
     if (optionId === 'PASS') {
       const plan = parseStrategyPlan(parsed.strategy_plan);
       if (plan) onPlan?.(plan);
       recordAiModelCall('pass', performance.now() - modelStarted, promptCharacters);
-      console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] pass; reason=${reason}`);
+      console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] pass; goal=${decisionCheck?.goal || 'unchecked'}; reason=${reason}`);
       return null;
     }
     const plan = parseStrategyPlan(parsed.strategy_plan);
     if (plan) onPlan?.(plan);
     recordAiModelCall('success', performance.now() - modelStarted, promptCharacters);
-    console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] option=${optionId}; reason=${reason}`);
+    console.log(`[LLM AI ${normalizedSelection.provider}/${normalizedSelection.model}] option=${optionId}; goal=${decisionCheck?.goal || 'unchecked'}; resource=${decisionCheck?.resourceUse || 'unchecked'}; reason=${reason}`);
     return legalPlays[optionId];
   } catch (error: any) {
     if (error.name === 'AbortError') {

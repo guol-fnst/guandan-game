@@ -10,7 +10,7 @@ import {
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
 } from './aiAnalysis';
-import { llmFindBestPlay, parseStrategyPlan } from './llmAi';
+import { llmFindBestPlay, parseDecisionCheck, parseStrategyPlan } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
 import { GameRoom } from '../services/GameRoom';
 import { getAiTelemetrySnapshot, resetAiTelemetry } from './aiTelemetry';
@@ -340,7 +340,10 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     const body = JSON.parse(init!.body as string);
     requestBody = body;
     input = JSON.parse(body.messages[1].content.split('\n')[1]);
-    return { ok: true, json: async () => ({ choices: [{ message: { content: '{"action_id":0}' } }] }) } as Response;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({
+      action_id: 0,
+      decision_check: { goal: 'direct_finish', resource_use: 'spend_justified', worst_reply: '无', why_not_lower_cost: '直接走完' },
+    }) } }] }) } as Response;
   }) as typeof fetch;
   try {
     await llmFindBestPlay(hands[0], plays, null, true, 2, context,
@@ -353,7 +356,9 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.deepEqual(input.local_analysis.hand_turns, { turns: 1, exact: true });
     assert.equal(input.team_plan.goal, 'finish_self');
     assert.ok(requestBody.messages[0].content.includes(STRATEGY_GUIDE));
-    assert.equal(input.strategy_framework.framework_version, 'whole-hand-v1');
+    assert.equal(input.strategy_framework.framework_version, 'whole-hand-v2');
+    assert.equal(input.strategy_framework.priority_order[0], 'direct_finish');
+    assert.ok(input.strategy_framework.mandatory_comparison.includes('lower_resource_action'));
     const route = input.team_routes.find((item: any) => item.goal === 'finish_self');
     assert.equal(route.action_id, 0);
     assert.deepEqual(route.remaining_turns, analysis.candidates[analysisKey(plays[0])].remainingTurns);
@@ -365,12 +370,14 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.equal(input.candidate_coverage.represented_equivalent_actions, plays.length);
     assert.equal(input.hand_combinations.same_as_legal_actions, true);
     assert.equal(input.legal_actions[0].equivalent_variants, 1);
+    assert.equal(input.legal_actions[0].cost.uses_aces, 0);
     assert.equal(typeof input.public_inference.unseen_controls, 'string');
     assert.ok(input.public_memory.publicly_known_cards.every((p: any) => p.cards === ''));
     assert.equal(input.sampled_hands, undefined);
     assert.equal(requestBody.max_tokens, 4096);
     assert.ok(requestBody.messages[1].content.includes('下一步，32字内'));
     assert.ok(requestBody.messages[1].content.includes('20字内'));
+    assert.ok(requestBody.messages[1].content.includes('decision_check'));
     assert.deepEqual(requestBody.thinking, { type: 'disabled' });
     assert.equal(requestBody.reasoning_effort, undefined);
     assert.equal(requestBody.temperature, undefined);
@@ -707,7 +714,9 @@ test('strategy memory reaches only its decision; corrected actions discard the p
   const context = contextFor([hand, [], [], []]);
   context.strategyMemory = { next: '先试探', reconsiderWhen: '对手报单', afterAction: 0, executed: 'PASS' };
   let requestedInput: any;
-  let rawResult = { action_id: 0, strategy_plan: { next: '保留控制张', reconsider_when: '对手报单' } };
+  let rawResult: any = { action_id: 0,
+    decision_check: { goal: 'direct_finish', resource_use: 'none', worst_reply: '无', why_not_lower_cost: '直接走完' },
+    strategy_plan: { next: '保留控制张', reconsider_when: '对手报单' } };
   globalThis.fetch = (async (_url, init) => {
     const body = JSON.parse(init!.body as string);
     requestedInput = JSON.parse(body.messages[1].content.split('\n')[1]);
@@ -737,6 +746,49 @@ test('strategy memory reaches only its decision; corrected actions discard the p
     await findSmartPlay(hand, null, true, 2, undefined,
       { provider: 'deepseek', model: 'deepseek-flash' }, p => { received = p; });
     assert.equal(received, undefined, 'a finished hand has no next-hand plan');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  }
+});
+
+test('live-context model decisions require a truthful compact strategy check', async () => {
+  assert.deepEqual(parseDecisionCheck({ goal: 'organize', resource_use: 'preserve',
+    worst_reply: '对手接管', why_not_lower_cost: '已是最低资源' }), {
+    goal: 'organize', resourceUse: 'preserve', worstReply: '对手接管', whyNotLowerCost: '已是最低资源',
+  });
+  assert.equal(parseDecisionCheck({ goal: 'invented', resource_use: 'preserve',
+    worst_reply: 'x', why_not_lower_cost: 'y' }), undefined);
+
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-only';
+  const ace = rankedHand([Rank.Ace]);
+  const plays = generateLegalPlays(ace, Rank.Two);
+  const context: AiDecisionContext = {
+    selfSeatIndex: 0, partnerSeatIndex: 2, lastPlayPlayerIndex: -1,
+    roundNumber: 1, teamLevels: [2, 2], leadingTeam: 0, passCount: 0,
+    actionHistory: [], recentActions: [],
+    players: [0, 1, 2, 3].map(seat => ({ seatIndex: seat, cardCount: seat ? 27 : 1,
+      finishRank: null, relation: seat === 0 ? 'self' : seat === 2 ? 'partner' : 'opponent' })),
+  };
+  let response: any = { action_id: 0 };
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    choices: [{ message: { content: JSON.stringify(response) } }],
+  }))) as typeof fetch;
+  try {
+    assert.equal(await llmFindBestPlay(ace, plays, null, true, Rank.Two, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }), undefined,
+    'missing audit is rejected when a real table context is present');
+    response = { action_id: 0, decision_check: { goal: 'direct_finish', resource_use: 'preserve',
+      worst_reply: '无', why_not_lower_cost: '直接走完' } };
+    assert.equal(await llmFindBestPlay(ace, plays, null, true, Rank.Two, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }), undefined,
+    'claiming preservation while spending an ace is rejected');
+    response.decision_check.resource_use = 'spend_justified';
+    assert.equal(await llmFindBestPlay(ace, plays, null, true, Rank.Two, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }), plays[0]);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
