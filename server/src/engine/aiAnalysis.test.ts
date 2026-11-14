@@ -1,3 +1,4 @@
+import { strategyBrief, STRATEGY_GUIDE } from './aiStrategy';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Card, CardPattern, PatternType, Rank, Suit } from '../../../shared/types';
@@ -351,6 +352,8 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.ok(input.played_by_seat.every((player: any) => player.cards.length > 0));
     assert.deepEqual(input.local_analysis.hand_turns, { turns: 1, exact: true });
     assert.equal(input.team_plan.goal, 'finish_self');
+    assert.ok(requestBody.messages[0].content.includes(STRATEGY_GUIDE));
+    assert.equal(input.strategy_framework.framework_version, 'whole-hand-v1');
     const route = input.team_routes.find((item: any) => item.goal === 'finish_self');
     assert.equal(route.action_id, 0);
     assert.deepEqual(route.remaining_turns, analysis.candidates[analysisKey(plays[0])].remainingTurns);
@@ -1070,4 +1073,21 @@ test('repeated leads with three to five cards trigger an intact bomb defence bef
   ctx.players[1].cardCount=12;
   assert.equal(finalizeAiDecision(null,[bomb],hand,last,false,2,ctx,undefined,null),null,
     'do not spend bombs on a calm large hand with no ordinary continuation');
+});
+
+
+test('whole-hand strategy briefing generalizes natural level assets across all thirteen levels', () => {
+  const deck=createDeck();
+  for(let level=Rank.Two;level<=Rank.Ace;level++){
+    const hand=[...deck.filter(c=>c.rank===level&&c.suit!==Suit.Heart).slice(0,3),
+      ...deck.filter(c=>c.rank===level&&c.suit===Suit.Heart)];
+    const brief=strategyBrief(hand,level);
+    assert.equal(brief.natural_level_cards,3);
+    assert.equal(brief.wildcards,2);
+    assert.equal(brief.level_group_options.pair,true);
+    assert.equal(brief.level_group_options.triple,true);
+    const short=strategyBrief(hand.slice(0,1),level);
+    assert.equal(short.level_group_options.pair,false);
+    assert.equal(short.level_group_options.triple,false);
+  }
 });

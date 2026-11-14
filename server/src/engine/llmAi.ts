@@ -1,3 +1,4 @@
+import { STRATEGY_GUIDE, strategyBrief } from './aiStrategy';
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
 import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo, resourceCost } from './aiAnalysis';
@@ -285,18 +286,16 @@ export async function llmFindBestPlay(
     ? '比较先走整组、保留控制回手、送队友与收尾。平静开局不为减少手数消耗配牌；等牌力先检查自然牌替代。'
     : lastPlayer?.relation === 'partner'
       ? '优先让队友走。仅在直接走完、明确阻断对手或接管后有可执行团队收益时压队友。'
-      : '比较接管与PASS的整手收益。先查完整普通接牌，不要把不拆组的级牌对误称拆炸。对手连续走牌且剩3至5张时，比较完整炸弹改变牌型；不能一直等到报单。保牌必须有具体收益或后续接管条件，不能仅因存在模拟结果就认定PASS更好。';
+      : '比较接管与PASS的整手收益。先查完整普通接牌，不要把不拆组的级牌对误称拆炸。结合对手持续推进、可能下一手结束与接风风险，比较完整炸弹改变牌型的收益，不必机械等到报单。保牌必须有具体收益或后续接管条件，不能仅因存在模拟结果就认定PASS更好。';
   const systemPrompt = `你是四人两队掼蛋选手，对家是队友。程序负责合法性、牌型和记牌，你选择战略。
 规则：红桃级牌是逢人配；单张大王>小王>级牌>A>K…；顺子用声明点数比较，A2345最低。实体牌、替代关系与声明点数由输入确定，不自行改牌。
 信息边界：只用自己的手牌和公开信息，不知道其他人的底牌；过牌不代表不能接，两张不保证是对子。hand_combinations只是有上限的代表组合，并非全部结构。
 当前任务：${scenario}。${task}
 ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾及阻止接风。检查被压后的回手机会，不能把静态两手当成连续两手必走。' : '中前盘重点：整理整手结构与回手机会，比较消耗炸弹/配牌/王的真实收益。'}
-决策顺序：
-1. 以本方名次和升级为目标，检查直接走完、对手即将结束与队友接风。
-2. 比较team_routes与其他合法动作的后续。同牌力动作看配牌、王、拆炸代价；附件不增加三带二牌力。开局不浪费配牌拼自然牌能组成的弱牌。
-3. 比较实际剩余结构与牌权：接管后出什么，被压后拿什么回手；出得多不等于更好。比较cost中的拆炸数量、余牌低单和高牌；低单可能仍属于顺子，不能机械惩罚。队友需要的牌型只能据公开信息判断。
-4. 参考模拟：样本少、估计接近或无模拟时不臆造胜率。remainingTurns只是静态拆分，exact也不代表必胜；controlProven才是公开信息的控牌证明。
-5. strategy_memory只是上次执行后的规划提示，每回合重新验证。不能把文字计划当成持牌事实。以当前手牌、verified_resources与结构为准；零张王不得声称留王；不得假设队友知道你的计划。
+统一实战决策指南：
+${STRATEGY_GUIDE}
+证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。模拟样本不足或接近时不臆造胜率。
+strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
 从legal_actions返回action_id（跟牌可PASS），strategy_plan写本次执行后的下一步及失效条件，不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
@@ -314,6 +313,7 @@ ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾�
   const representedHandCombinationCounts = handCombinations
     .map((_, index) => handCombinationEquivalentCounts[index] || 1);
   const input = {
+    strategy_framework: strategyBrief(hand, currentLevel, context),
     strategy_memory: context?.strategyMemory,
     public_action_count: context?.actionHistory?.length,
     seat: context?.selfSeatIndex ?? '未知',

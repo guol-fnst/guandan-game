@@ -20,6 +20,8 @@ export function resourceCost(hand: Card[], play: CardPattern, level: number) {
     remaining_low_singletons: remaining.filter(c => effectiveRank(c.rank, level) < Rank.Queen
       && counts.get(c.rank) === 1).length,
     remaining_high_cards: remaining.filter(c => effectiveRank(c.rank, level) >= effectiveRank(Rank.Ace, level)).length,
+    natural_level_cards_spent: play.cards.filter(c => c.rank === level && c.suit !== Suit.Heart).length,
+    remaining_natural_level_cards: remaining.filter(c => c.rank === level && c.suit !== Suit.Heart).length,
   };
 }
 
