@@ -55,6 +55,24 @@ test('waiting room departure still frees the seat', () => {
   assert.equal(room.getPlayerCount(), 0);
 });
 
+test('invited players can choose the inviter partner or either opponent seat', () => {
+  const room = new GameRoom('invite-seat-test', 'owner');
+  room.addPlayer('owner', 'Owner', 2, null);
+  const partner = room.resolveInviteSeat('owner', 'partner');
+  assert.deepEqual(partner, { success: true, seatIndex: 2 });
+  assert.equal(room.addPlayer('friend', 'Friend', 2, null, false, partner.seatIndex), 2);
+  assert.match(room.resolveInviteSeat('owner', 'partner').error || '', /同队座位已被占用/);
+
+  const firstOpponent = room.resolveInviteSeat('owner', 'opponent');
+  assert.deepEqual(firstOpponent, { success: true, seatIndex: 1 });
+  assert.equal(room.addPlayer('opponent-1', 'Opponent 1', 2, null, false, firstOpponent.seatIndex), 1);
+  const secondOpponent = room.resolveInviteSeat('owner', 'opponent');
+  assert.deepEqual(secondOpponent, { success: true, seatIndex: 3 });
+  assert.equal(room.addPlayer('opponent-2', 'Opponent 2', 2, null, false, secondOpponent.seatIndex), 3);
+  assert.match(room.resolveInviteSeat('owner', 'opponent').error || '', /两个对手座位都已被占用/);
+  room.clearPlayers();
+});
+
 test('LLM is default and AI turns retain the 90-second watchdog', () => {
   const room = new GameRoom('ai-timeout-test', 'p0');
   assert.equal(room.aiUseLLM, true);

@@ -117,7 +117,12 @@ export function setupSocketHandlers(io: Server) {
       socket.emit('room_list', roomManager.getRoomList());
     });
 
-    socket.on('join_room', (data: { roomId: string; password?: string }) => {
+    socket.on('join_room', (data: {
+      roomId: string;
+      password?: string;
+      inviterId?: string;
+      preferredRelation?: 'partner' | 'opponent';
+    }) => {
       if (!socket.userId) {
         socket.emit('error', { message: '请先登录' });
         return;
@@ -158,7 +163,21 @@ export function setupSocketHandlers(io: Server) {
 
       const user = findUserById(socket.userId);
       const alreadyInRoom = room.hasPlayer(socket.userId);
-      const idx = room.addPlayer(socket.userId, socket.username || 'Player', user?.level || 2, socket);
+      let preferredSeatIndex: number | undefined;
+      if (!alreadyInRoom && (data.inviterId || data.preferredRelation)) {
+        if (!data.inviterId || !['partner', 'opponent'].includes(data.preferredRelation || '')) {
+          socket.emit('error', { message: '邀请信息无效，请重新打开邀请链接' });
+          return;
+        }
+        const resolved = room.resolveInviteSeat(data.inviterId, data.preferredRelation!);
+        if (!resolved.success) {
+          socket.emit('error', { message: resolved.error });
+          return;
+        }
+        preferredSeatIndex = resolved.seatIndex;
+      }
+      const idx = room.addPlayer(socket.userId, socket.username || 'Player', user?.level || 2, socket,
+        false, preferredSeatIndex);
       if (idx < 0) {
         socket.emit('error', { message: '房间已满' });
         return;

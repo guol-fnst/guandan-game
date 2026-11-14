@@ -10,11 +10,15 @@ import PlayArea, { PlayerAction } from '../components/PlayArea';
 import SpectatorHand from '../components/SpectatorHand';
 import CardComponent from '../components/CardComponent';
 
+type InviteRelation = 'partner' | 'opponent';
+
 export default function GameRoom() {
   const patternName = (type: string) => ({ single: '单张', pair: '对子', triple: '三张', triple_pair: '三带二', straight: '顺子', consecutive_pair: '三连对', plane: '二连三', flush_straight: '同花顺', king_bomb: '四王炸' }[type] || type.replace('bomb', '炸弹·'));
   const { roomId } = useParams<{ roomId: string }>();
   const [searchParams] = useSearchParams();
   const spectatorMode = searchParams.get('spectator') === '1';
+  const inviteInviterId = searchParams.get('inviter');
+  const requiresRelationChoice = searchParams.get('invite') === '1' && !!inviteInviterId && !spectatorMode;
   const navigate = useNavigate();
   const location = useLocation();
   const { userId, isLoggedIn, logout } = useAuthStore();
@@ -39,10 +43,14 @@ export default function GameRoom() {
   const [joinPassword, setJoinPassword] = useState('');
   const [joinPasswordError, setJoinPasswordError] = useState('');
   const [passwordPromptOpen, setPasswordPromptOpen] = useState(false);
+  const [preferredRelation, setPreferredRelation] = useState<InviteRelation | null>(null);
+  const [relationPromptOpen, setRelationPromptOpen] = useState(requiresRelationChoice);
+  const [relationError, setRelationError] = useState('');
 
   const buildShareUrl = () => {
     const url = new URL(`game/${encodeURIComponent(roomId || '')}`, new URL(import.meta.env.BASE_URL, window.location.origin));
     url.searchParams.set('invite', '1');
+    if (waiting && userId) url.searchParams.set('inviter', userId);
     if (!waiting) url.searchParams.set('spectator', '1');
     return url.toString();
   };
@@ -87,7 +95,15 @@ export default function GameRoom() {
     getSocket()?.emit(spectatorMode ? 'join_spectator' : 'join_room', {
       roomId,
       password: joinPassword,
+      inviterId: preferredRelation ? inviteInviterId : undefined,
+      preferredRelation: preferredRelation || undefined,
     });
+  };
+
+  const chooseInviteRelation = (relation: InviteRelation) => {
+    setRelationError('');
+    setPreferredRelation(relation);
+    setRelationPromptOpen(false);
   };
 
   useEffect(() => {
@@ -173,10 +189,17 @@ export default function GameRoom() {
     const socket = getSocket();
     if (!socket) return;
 
-    socket.emit(spectatorMode ? 'join_spectator' : 'join_room', { roomId });
+    if (!requiresRelationChoice || preferredRelation) {
+      socket.emit(spectatorMode ? 'join_spectator' : 'join_room', {
+        roomId,
+        inviterId: preferredRelation ? inviteInviterId : undefined,
+        preferredRelation: preferredRelation || undefined,
+      });
+    }
 
     const onGameState = (state: GameState) => {
       setPasswordPromptOpen(false);
+      setRelationPromptOpen(false);
       setJoinPasswordError('');
       setGameState(state);
       setDeclarations([]);
@@ -264,6 +287,12 @@ export default function GameRoom() {
         setJoinPasswordError(current => current ? '密码错误，请重试' : '该房间需要密码');
         return;
       }
+      if (preferredRelation && (data.message.includes('邀请人') || data.message.includes('座位')
+        || data.message.includes('选择阵营') || data.message.includes('邀请信息'))) {
+        setRelationError(data.message);
+        setRelationPromptOpen(true);
+        return;
+      }
       setErrorMsg(data.message);
       setTimeout(() => setErrorMsg(''), 3000);
     };
@@ -304,7 +333,8 @@ export default function GameRoom() {
       socket.off('hint_result', onHintResult);
       socket.off('spectator_removed', onSpectatorRemoved);
     };
-  }, [roomId, spectatorMode, isLoggedIn, userId, location.pathname, location.search]);
+  }, [roomId, spectatorMode, isLoggedIn, userId, location.pathname, location.search,
+    requiresRelationChoice, inviteInviterId, preferredRelation]);
 
   useEffect(() => {
     if (!gameState || !userId || spectatorMode) return;
@@ -733,6 +763,27 @@ export default function GameRoom() {
               {joinPasswordError && <p style={{ color: '#ff8b8b', fontSize: 13, marginBottom: 10 }}>{joinPasswordError}</p>}
               <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
                 <button type="button" className="btn-primary" onClick={submitRoomPassword}>进入房间</button>
+                <button type="button" className="btn-secondary" onClick={() => navigate('/lobby')}>返回大厅</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {relationPromptOpen && (
+          <div style={styles.modal}>
+            <div style={{ ...styles.modalContent, width: 'min(390px, calc(100vw - 32px))' }}>
+              <h3 style={{ marginBottom: 10 }}>选择和朋友的阵营</h3>
+              <p style={{ marginBottom: 14, color: 'rgba(255,255,255,.72)', fontSize: 13 }}>
+                掼蛋中坐在邀请人对面就是同队，左右邻座是对手。
+              </p>
+              {relationError && <p style={{ color: '#ff8b8b', fontSize: 13, marginBottom: 12 }}>{relationError}</p>}
+              <div style={{ display: 'grid', gap: 10 }}>
+                <button type="button" className="btn-primary" onClick={() => chooseInviteRelation('partner')}>
+                  和邀请人同队（坐对家）
+                </button>
+                <button type="button" className="btn-secondary" onClick={() => chooseInviteRelation('opponent')}>
+                  作为邀请人的对手（坐左右）
+                </button>
                 <button type="button" className="btn-secondary" onClick={() => navigate('/lobby')}>返回大厅</button>
               </div>
             </div>

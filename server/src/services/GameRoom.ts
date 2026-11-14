@@ -62,7 +62,10 @@ export class GameRoom {
     this.ownerId = ownerId;
   }
 
-  addPlayer(id: string, name: string, level: number, socket: any, isAI: boolean = false): number {
+  addPlayer(
+    id: string, name: string, level: number, socket: any, isAI: boolean = false,
+    preferredSeatIndex?: number,
+  ): number {
     const existingIdx = this.players.findIndex(p => p.id === id);
     if (existingIdx >= 0) {
       const existing = this.players[existingIdx];
@@ -77,9 +80,14 @@ export class GameRoom {
     }
 
     if (this.players.length >= MAX_PLAYERS) return -1;
+    const seatIndex = preferredSeatIndex === undefined
+      ? this.seatAssignments.findIndex(seat => seat === null)
+      : Number.isInteger(preferredSeatIndex) && preferredSeatIndex >= 0
+        && preferredSeatIndex < MAX_PLAYERS && this.seatAssignments[preferredSeatIndex] === null
+        ? preferredSeatIndex : -1;
+    if (seatIndex < 0) return -1;
     this.players.push({ id, name, level, socket, isAI });
-    const seatIndex = this.seatAssignments.findIndex(seat => seat === null);
-    if (seatIndex >= 0) this.seatAssignments[seatIndex] = id;
+    this.seatAssignments[seatIndex] = id;
     if (!this.state || this.state.phase === GamePhase.Waiting) {
       this.syncWaitingState();
     }
@@ -126,6 +134,26 @@ export class GameRoom {
 
   hasSpectator(id: string): boolean {
     return this.spectators.has(id);
+  }
+
+  resolveInviteSeat(
+    inviterId: string, relation: 'partner' | 'opponent',
+  ): { success: boolean; seatIndex?: number; error?: string } {
+    if (this.state && this.state.phase !== GamePhase.Waiting) {
+      return { success: false, error: '牌局已经开始，不能选择阵营' };
+    }
+    const inviterSeat = this.seatAssignments.indexOf(inviterId);
+    if (inviterSeat < 0) return { success: false, error: '邀请人已不在房间中' };
+    const targets = relation === 'partner'
+      ? [(inviterSeat + 2) % MAX_PLAYERS]
+      : [(inviterSeat + 1) % MAX_PLAYERS, (inviterSeat + 3) % MAX_PLAYERS];
+    const seatIndex = targets.find(index => this.seatAssignments[index] === null);
+    if (seatIndex === undefined) {
+      return { success: false, error: relation === 'partner'
+        ? '邀请人的同队座位已被占用，请选择作为对手'
+        : '邀请人的两个对手座位都已被占用，请选择同队' };
+    }
+    return { success: true, seatIndex };
   }
 
   addSpectator(id: string, name: string, socket: any): { success: boolean; error?: string } {
