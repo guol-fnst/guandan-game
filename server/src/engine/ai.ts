@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
@@ -998,6 +998,18 @@ function policyAction(play: CardPattern | null): string {
   return play ? `${play.type}:${play.rank}:${play.cards.length}` : 'PASS';
 }
 
+/** Finite cost for spending cards which normally provide a later recapture.
+ * This is only compared between equally productive calm opening leads. */
+function openingControlCost(play: CardPattern, hand: Card[], level: number): number {
+  const cost = resourceCost(hand, play, level);
+  return play.cards.reduce((sum, card) => sum
+    + (isJoker(card) ? 6
+      : isWildCard(card, level) ? 6
+        : card.rank === level ? 4
+          : card.rank === Rank.Ace ? 2 : 0), 0)
+    + cost.broken_natural_bombs.length * 8;
+}
+
 /** Enforced for both LLM replies and local fallback; explanations alone cannot
  * authorize overtaking the partner or spending a stronger equivalent group. */
 export function enforceTeamStrategy(
@@ -1039,6 +1051,27 @@ export function enforceTeamStrategy(
     const replacement = orderCandidates(equal.length ? equal : natural, hand, level, free, context, analysis)[0];
     if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) {
       proposed = changed(proposed, replacement, 'opening_resource')!;
+    }
+  }
+  // A calm first lead should not spend a triple of aces, natural level cards,
+  // or jokers merely because five cards leave the hand at once. Compare the
+  // actual residual partition against other equally large leads. This remains
+  // a preference: a uniquely more efficient high lead, direct finish, or
+  // reliable paired simulation may still justify spending the resource.
+  if (opening && !isBombPattern(proposed)) {
+    const proposedCost = openingControlCost(proposed, hand, level);
+    const proposedAfter = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
+    if (proposedCost >= 4 && proposedAfter) {
+      const alternatives = candidates.filter(play => !isBombPattern(play)
+        && play.cards.length >= proposed!.cards.length
+        && openingControlCost(play, hand, level) <= proposedCost - 4
+        && !play.cards.some(card => isWildCard(card, level) || isJoker(card))
+        && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined
+        && analysis.candidates[analysisKey(play)].remainingTurns.turns <= proposedAfter.turns);
+      const replacement = orderCandidates(alternatives, hand, level, true, context, analysis)[0];
+      if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) {
+        proposed = changed(proposed, replacement, 'opening_resource')!;
+      }
     }
   }
   const leader = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);

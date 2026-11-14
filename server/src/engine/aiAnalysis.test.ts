@@ -1146,3 +1146,44 @@ test('one-ply reply risk sees a whole-hand enemy response using public cards, wi
   assert.equal(expired.candidates[analysisKey(waste)].replyFinishRisk, undefined,
     'an unmeasured risk must not be presented as zero');
 });
+
+test('calm opening preserves triple aces when an equally efficient large natural lead exists', () => {
+  const hand = rankedHand([
+    Rank.Ace, Rank.Ace, Rank.Ace, Rank.Seven, Rank.Seven,
+    Rank.Three, Rank.Four, Rank.Five, Rank.Six, Rank.Seven,
+    Rank.Eight, Rank.Eight, Rank.Nine, Rank.Nine, Rank.Ten, Rank.Ten,
+    Rank.Jack, Rank.Jack, Rank.Queen, Rank.Queen,
+  ]);
+  const candidates = generateLegalPlays(hand, Rank.Two);
+  const aces = candidates.find(play => play.type === PatternType.TriplePair && play.rank === Rank.Ace)!;
+  const straight = candidates.find(play => play.type === PatternType.Straight && play.rank === Rank.Seven)!;
+  assert.ok(aces && straight);
+  const context: AiDecisionContext = {
+    selfSeatIndex: 0, partnerSeatIndex: 2, lastPlayPlayerIndex: -1,
+    roundNumber: 1, teamLevels: [2, 2], leadingTeam: 0, passCount: 0,
+    actionHistory: [], recentActions: [],
+    players: [0, 1, 2, 3].map(seat => ({ seatIndex: seat, cardCount: seat ? 27 : hand.length,
+      finishRank: null, relation: seat === 0 ? 'self' : seat === 2 ? 'partner' : 'opponent' })),
+  };
+  const analysis: DecisionAnalysis = {
+    handTurns: { turns: 5, exact: true },
+    candidates: {
+      [analysisKey(aces)]: { remainingTurns: { turns: 4, exact: false } },
+      [analysisKey(straight)]: { remainingTurns: { turns: 4, exact: false } },
+    },
+    simulation: { status: 'not_endgame', samples: 0, elapsedMs: 0 },
+  };
+  let corrections: any[] = [];
+  const preserved = enforceTeamStrategy(aces, candidates, hand, null, true, Rank.Two, context, analysis,
+    correction => corrections.push(correction))!;
+  assert.equal(analysisKey(preserved), analysisKey(straight));
+  assert.ok(corrections.some(correction => correction.rule === 'opening_resource'));
+
+  analysis.candidates[analysisKey(straight)].remainingTurns.turns = 5;
+  corrections = [];
+  const efficient = enforceTeamStrategy(aces, candidates, hand, null, true, Rank.Two, context, analysis,
+    correction => corrections.push(correction))!;
+  assert.equal(efficient.type, PatternType.TriplePair);
+  assert.equal(efficient.rank, Rank.Ace,
+    'a high group remains legal when it uniquely improves the residual partition');
+});
