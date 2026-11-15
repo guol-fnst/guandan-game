@@ -1,6 +1,7 @@
 import { STRATEGY_GUIDE, strategyBrief } from './aiStrategy';
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
+import { isBombPattern } from './compare';
 import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo, resourceCost } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
@@ -230,6 +231,7 @@ function describeActionCost(option: CardPattern, hand: Card[], currentLevel: num
     uses_wildcards: option.cards.filter(card => card.rank === currentLevel && card.suit === 'H').length,
     uses_jokers: option.cards.filter(card => card.rank >= Rank.SmallJoker).length,
     uses_aces: option.cards.filter(card => card.rank === Rank.Ace).length,
+    uses_bomb: isBombPattern(option),
     breaks_bomb: [...used].some(([rank, count]) => (held.get(rank) || 0) >= 4 && count < (held.get(rank) || 0)),
     splits_group: [...used].some(([rank, count]) => (held.get(rank) || 0) > count),
   };
@@ -240,7 +242,7 @@ function spendsControlResource(option: CardPattern, hand: Card[], currentLevel: 
   for (const card of hand) held.set(card.rank, (held.get(card.rank) || 0) + 1);
   const cost = describeActionCost(option, hand, currentLevel, held);
   return cost.uses_wildcards > 0 || cost.uses_jokers > 0 || cost.uses_aces > 0
-    || cost.natural_level_cards_spent > 0 || cost.breaks_bomb;
+    || cost.natural_level_cards_spent > 0 || cost.breaks_bomb || cost.uses_bomb;
 }
 
 function compactActionGroups(

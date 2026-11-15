@@ -1002,12 +1002,16 @@ function policyAction(play: CardPattern | null): string {
  * This is only compared between equally productive calm opening leads. */
 function openingControlCost(play: CardPattern, hand: Card[], level: number): number {
   const cost = resourceCost(hand, play, level);
+  const bombCost = !isBombPattern(play) ? 0
+    : play.type === PatternType.KingBomb ? 24
+      : play.type === PatternType.FlushStraight ? 14
+        : 10 + Math.max(0, play.length - 4) * 2;
   return play.cards.reduce((sum, card) => sum
     + (isJoker(card) ? 6
       : isWildCard(card, level) ? 6
         : card.rank === level ? 4
           : card.rank === Rank.Ace ? 2 : 0), 0)
-    + cost.broken_natural_bombs.length * 8;
+    + cost.broken_natural_bombs.length * 8 + bombCost;
 }
 
 /** Enforced for both LLM replies and local fallback; explanations alone cannot
@@ -1058,12 +1062,15 @@ export function enforceTeamStrategy(
   // actual residual partition against other equally large leads. This remains
   // a preference: a uniquely more efficient high lead, direct finish, or
   // reliable paired simulation may still justify spending the resource.
-  if (opening && !isBombPattern(proposed)) {
+  if (opening) {
     const proposedCost = openingControlCost(proposed, hand, level);
     const proposedAfter = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (proposedCost >= 4 && proposedAfter) {
+      const protectedIds = isBombPattern(proposed)
+        ? new Set(proposed.cards.map(card => card.id)) : undefined;
       const alternatives = candidates.filter(play => !isBombPattern(play)
         && play.cards.length >= proposed!.cards.length
+        && (!protectedIds || play.cards.every(card => !protectedIds.has(card.id)))
         && openingControlCost(play, hand, level) <= proposedCost - 4
         && !play.cards.some(card => isWildCard(card, level) || isJoker(card))
         && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined

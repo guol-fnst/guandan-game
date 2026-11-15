@@ -371,6 +371,7 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.equal(input.hand_combinations.same_as_legal_actions, true);
     assert.equal(input.legal_actions[0].equivalent_variants, 1);
     assert.equal(input.legal_actions[0].cost.uses_aces, 0);
+    assert.equal(input.legal_actions[0].cost.uses_bomb, false);
     assert.equal(typeof input.public_inference.unseen_controls, 'string');
     assert.ok(input.public_memory.publicly_known_cards.every((p: any) => p.cards === ''));
     assert.equal(input.sampled_hands, undefined);
@@ -789,6 +790,19 @@ test('live-context model decisions require a truthful compact strategy check', a
     response.decision_check.resource_use = 'spend_justified';
     assert.equal(await llmFindBestPlay(ace, plays, null, true, Rank.Two, context,
       { provider: 'deepseek', model: 'deepseek-flash' }), plays[0]);
+
+    const bombHand = rankedHand([Rank.Three, Rank.Three, Rank.Three, Rank.Three]);
+    const bomb = generateLegalPlays(bombHand, Rank.Two)
+      .find(play => play.type === PatternType.Bomb4)!;
+    context.players[0].cardCount = bombHand.length;
+    response = { action_id: 0, decision_check: { goal: 'direct_finish', resource_use: 'preserve',
+      worst_reply: '无', why_not_lower_cost: '直接走完' } };
+    assert.equal(await llmFindBestPlay(bombHand, [bomb], null, true, Rank.Two, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }), undefined,
+    'playing an intact bomb is itself a control-resource spend');
+    response.decision_check.resource_use = 'spend_justified';
+    assert.equal(await llmFindBestPlay(bombHand, [bomb], null, true, Rank.Two, context,
+      { provider: 'deepseek', model: 'deepseek-flash' }), bomb);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
@@ -1238,4 +1252,56 @@ test('calm opening preserves triple aces when an equally efficient large natural
   assert.equal(efficient.type, PatternType.TriplePair);
   assert.equal(efficient.rank, Rank.Ace,
     'a high group remains legal when it uniquely improves the residual partition');
+});
+
+test('calm opening preserves a flush straight when a disjoint ordinary route is equally efficient', () => {
+  const deck = createDeck();
+  const take = (rank: Rank, suit: Suit) => deck.find(card => card.rank === rank && card.suit === suit)!;
+  const flushCards = [Rank.Three, Rank.Four, Rank.Five, Rank.Six, Rank.Seven]
+    .map(rank => take(rank, Suit.Spade));
+  const ordinaryCards = [
+    take(Rank.Eight, Suit.Heart), take(Rank.Nine, Suit.Club), take(Rank.Ten, Suit.Diamond),
+    take(Rank.Jack, Suit.Heart), take(Rank.Queen, Suit.Club),
+  ];
+  const extras = [
+    take(Rank.Three, Suit.Heart), take(Rank.Three, Suit.Club),
+    take(Rank.Four, Suit.Heart), take(Rank.Four, Suit.Club),
+    take(Rank.Five, Suit.Heart), take(Rank.Five, Suit.Club),
+    take(Rank.Six, Suit.Heart), take(Rank.Six, Suit.Club),
+    take(Rank.King, Suit.Heart), take(Rank.Ace, Suit.Club),
+  ];
+  const hand = [...flushCards, ...ordinaryCards, ...extras];
+  const candidates = generateLegalPlays(hand, Rank.Two);
+  const flush = candidates.find(play => play.type === PatternType.FlushStraight
+    && flushCards.every(card => play.cards.some(used => used.id === card.id)))!;
+  const ordinary = candidates.find(play => play.type === PatternType.Straight && play.rank === Rank.Queen
+    && ordinaryCards.every(card => play.cards.some(used => used.id === card.id)))!;
+  assert.ok(flush && ordinary);
+  const context: AiDecisionContext = {
+    selfSeatIndex: 0, partnerSeatIndex: 2, lastPlayPlayerIndex: -1,
+    roundNumber: 1, teamLevels: [2, 2], leadingTeam: 0, passCount: 0,
+    actionHistory: [], recentActions: [],
+    players: [0, 1, 2, 3].map(seat => ({ seatIndex: seat, cardCount: seat ? 27 : hand.length,
+      finishRank: null, relation: seat === 0 ? 'self' : seat === 2 ? 'partner' : 'opponent' })),
+  };
+  const analysis: DecisionAnalysis = {
+    handTurns: { turns: 5, exact: true },
+    candidates: {
+      [analysisKey(flush)]: { remainingTurns: { turns: 4, exact: false } },
+      [analysisKey(ordinary)]: { remainingTurns: { turns: 4, exact: false } },
+    },
+    simulation: { status: 'not_endgame', samples: 0, elapsedMs: 0 },
+  };
+  let corrections: any[] = [];
+  const preserved = enforceTeamStrategy(flush, candidates, hand, null, true, Rank.Two, context, analysis,
+    correction => corrections.push(correction))!;
+  assert.equal(analysisKey(preserved), analysisKey(ordinary));
+  assert.ok(corrections.some(correction => correction.rule === 'opening_resource'));
+
+  analysis.candidates[analysisKey(ordinary)].remainingTurns.turns = 5;
+  corrections = [];
+  const efficient = enforceTeamStrategy(flush, candidates, hand, null, true, Rank.Two, context, analysis,
+    correction => corrections.push(correction))!;
+  assert.equal(analysisKey(efficient), analysisKey(flush),
+    'the guard does not ban a flush straight that uniquely improves the partition');
 });
