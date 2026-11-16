@@ -353,7 +353,7 @@ export default function GameRoom() {
             <strong>{isSpectator ? teamBLevel : opponentLevel}<em>级</em></strong>
           </div>
           <div className="duel-score-meta">第 {gameState?.roundNumber || 0} 局 · {isSpectator ? `队伍 ${leadingTeam === 0 ? 'A' : 'B'} 在台` : `${ownIsLeading ? '我方' : '对方'}在台`}</div>
-          {actionSecondsLeft !== null && (
+          {actionSecondsLeft !== null && !isMyTurn && (
             <div className="duel-turn-countdown" aria-label={`本回合剩余 ${actionSecondsLeft} 秒`}>
               倒计时 <strong>{actionSecondsLeft}</strong> 秒
             </div>
@@ -470,7 +470,7 @@ export default function GameRoom() {
             <PlayerInfoComponent
               player={getPlayerForPosition(0)!}
               position="bottom"
-              secondsLeft={actionSecondsLeft}
+              secondsLeft={isMyTurn ? null : actionSecondsLeft}
               isCurrent={gameState?.currentPlayerIndex === displaySeatIndex}
               isMe={!isSpectator}
               isPartner={false}
@@ -576,6 +576,27 @@ export default function GameRoom() {
               ) : (
                 <>
                   <button
+                    className="btn-secondary pass-action"
+                    onClick={handlePass}
+                    disabled={!isMyTurn || !gameState?.lastPlay}
+                    style={{
+                      opacity: isMyTurn ? 1 : 0.3,
+                      padding: '8px 20px',
+                      fontSize: 14,
+                    }}
+                  >
+                    不出
+                  </button>
+                  {isMyTurn && actionSecondsLeft !== null && (
+                    <div
+                      className={`action-countdown${actionSecondsLeft <= 10 ? ' is-urgent' : ''}`}
+                      role="timer"
+                      aria-label={`本回合剩余 ${actionSecondsLeft} 秒`}
+                    >
+                      {actionSecondsLeft}
+                    </div>
+                  )}
+                  <button
                     className="btn-secondary hint-action"
                     onClick={() => { getSocket()?.emit('hint', { currentCardIds: [...selectedCardIds] }); }}
                     disabled={!isMyTurn}
@@ -602,18 +623,6 @@ export default function GameRoom() {
                     }}
                   >
                     出牌<span className="play-card-count"> ({selectedCardIds.size}张)</span>
-                  </button>
-                  <button
-                    className="btn-secondary pass-action"
-                    onClick={handlePass}
-                    disabled={!isMyTurn || !gameState?.lastPlay}
-                    style={{
-                      opacity: isMyTurn ? 1 : 0.3,
-                      padding: '8px 20px',
-                      fontSize: 14,
-                    }}
-                  >
-                    不出
                   </button>
                 </>
               )}

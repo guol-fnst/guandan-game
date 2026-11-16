@@ -133,9 +133,6 @@
   .game-room .player-seat--right .player-info[data-seconds-left]::after { top: -38px; left: 0; right: auto; }
   .game-room .game-play-actions { gap: 8px; }
   .game-room .game-play-actions button { min-height: 44px; padding: 6px 8px !important; min-width: 76px; width: 76px; line-height: 1.1; border-radius: 24px; font-size: 18px !important; font-weight: 800; box-shadow: none; backdrop-filter: blur(2px); text-shadow: 0 1px 2px #003c38; }
-  .game-room .pass-action { order: 2; }
-  .game-room .hint-action { order: 0; }
-  .game-room .play-action { order: 1; }
   .game-room .pass-action, .game-room .hint-action { color: #fff !important; background: #d8efff18 !important; border: 1px solid #d8efff70 !important; }
   .game-room .play-action { color: #ffe79a; background: #ffdb451c; border: 1px solid #ffe97988; }
   .game-room .game-play-actions button:disabled { opacity: .6 !important; box-shadow: none; }
