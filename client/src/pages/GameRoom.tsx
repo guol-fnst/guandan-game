@@ -34,6 +34,37 @@ export default function GameRoom() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
   const [actionSecondsLeft, setActionSecondsLeft] = useState<number | null>(null);
+  const [arrangeEnabled, setArrangeEnabled] = useState(false);
+  const [arrangement, setArrangement] = useState<{ key: string; groups: CardPattern[] } | null>(null);
+  const handKey = `${roomId}:${gameState?.roundNumber}:${gameState?.currentLevel}:${myCards.map(card => card.id).sort((a, b) => a - b).join(',')}`;
+
+  useEffect(() => {
+    setArrangeEnabled(false);
+    setArrangement(null);
+  }, [roomId, gameState?.roundNumber]);
+
+  useEffect(() => {
+    if (!arrangeEnabled || gameState?.phase !== GamePhase.Playing || !myCards.length) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      if (!active) return;
+      setArrangeEnabled(false);
+      setErrorMsg('理牌超时，请重试');
+    }, 5000);
+    getSocket()?.emit('arrange_hand', (groups: CardPattern[] | null) => {
+      if (!active) return;
+      window.clearTimeout(timer);
+      const ids = groups?.flatMap(group => group.cards.map(card => card.id)) || [];
+      // A hand can change while the request is in flight. Never show stale cards.
+      if (!groups || ids.length !== myCards.length || new Set(ids).size !== ids.length
+        || ids.some(id => !myCards.some(card => card.id === id))) {
+        setArrangeEnabled(false);
+        return;
+      }
+      setArrangement({ key: handKey, groups });
+    });
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [arrangeEnabled, handKey, gameState?.phase]);
 
   useEffect(() => {
     const deadline = gameState?.actionDeadline;
@@ -525,6 +556,11 @@ export default function GameRoom() {
 
         {/* Bottom - my hand cards */}
         {!isSpectator && <div className="game-bottom-area">
+          {gameState?.phase === GamePhase.Playing && myCards.length > 0 && <button
+            className="hand-arrange-toggle btn-secondary"
+            aria-pressed={arrangeEnabled}
+            onClick={() => { setArrangeEnabled(value => !value); clearSelection(); }}
+          >{arrangeEnabled ? '恢复' : '一键理牌'}</button>}
           <div className="game-action-bar">
             <div className="game-play-actions">
               {gameState?.phase === 'return_tribute' ? (
@@ -588,6 +624,7 @@ export default function GameRoom() {
             onToggle={toggleCardSelection}
             onToggleStack={toggleCardStackSelection}
             currentLevel={currentLevel}
+            arrangedGroups={arrangeEnabled && arrangement?.key === handKey ? arrangement.groups : undefined}
           /></div>
         </div>}
 

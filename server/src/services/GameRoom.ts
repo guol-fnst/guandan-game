@@ -11,6 +11,7 @@ import { findBestPlay, findSmartPlay, generateLegalPlays } from '../engine/ai';
 import type { AiDecisionContext, AiRecentAction } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
 import { recordAiDecision } from '../engine/aiTelemetry';
+import { arrangeHand } from '../engine/arrangeHand';
 
 const MAX_PLAYERS = 4;
 const PLAYER_ACTION_TIMEOUT = 90000;
@@ -216,6 +217,11 @@ export class GameRoom {
     if (!this.state || this.state.phase === GamePhase.Waiting) {
       this.syncWaitingState();
     }
+  }
+
+  getArrangedHand(playerId: string): CardPattern[] | null {
+    if (!this.state || this.state.phase !== GamePhase.Playing || !this.hasPlayer(playerId)) return null;
+    return arrangeHand(this.hands.get(playerId) || [], this.state.currentLevel);
   }
 
   requestHint(playerId: string, currentCardIds: number[] = []): { cards: Card[]; passed: boolean } | null {

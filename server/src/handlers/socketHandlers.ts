@@ -248,6 +248,14 @@ export function setupSocketHandlers(io: Server) {
       socket.emit('room_list', roomManager.getRoomList());
     });
 
+    socket.on('arrange_hand', (reply: unknown) => {
+      if (typeof reply !== 'function' || !socket.userId || !socket.currentRoomId) return;
+      const room = roomManager.getRoom(socket.currentRoomId);
+      if (!room) return;
+      // Reply privately to the requesting player, never broadcast their hand.
+      reply(room.getArrangedHand(socket.userId));
+    });
+
     socket.on('hint', (data?: { currentCardIds?: number[] }) => {
       if (!socket.userId || !socket.currentRoomId) return;
       const room = roomManager.getRoom(socket.currentRoomId);

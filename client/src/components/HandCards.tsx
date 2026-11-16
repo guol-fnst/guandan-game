@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Card, Rank, Suit } from '../sharedTypes';
+import { Card, CardPattern, Rank, Suit } from '../sharedTypes';
 import CardComponent from './CardComponent';
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
   currentLevel: number;
   /** Portrait phones group jokers, level cards, then the four suits. */
   groupBySuit?: boolean;
+  arrangedGroups?: CardPattern[];
 }
 
 function stackOffset(index: number) {
@@ -17,7 +18,7 @@ function stackOffset(index: number) {
   return `calc(${Array.from({ length: index }, () => 'var(--hand-stack-rise)').join(' + ')})`;
 }
 
-export default function HandCards({ cards, selectedIds, onToggle, onToggleStack, currentLevel, groupBySuit = false }: Props) {
+export default function HandCards({ cards, selectedIds, onToggle, onToggleStack, currentLevel, groupBySuit = false, arrangedGroups }: Props) {
   const gesture = useRef<{
     pointerId: number; x: number; y: number; select: boolean;
     selected: Set<number>; visited: Set<number>;
@@ -99,8 +100,20 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
     })
     : cards;
 
-  const groups: Card[][] = [];
-  for (const card of displayedCards) {
+  const groups: Card[][] = arrangedGroups ? arrangedGroups.map(pattern => {
+    const rank = (card: Card) => {
+      const resolved = pattern.substitutions?.find(item => item.id === card.id)?.rank ?? card.rank;
+      return pattern.rank === 5 && resolved === Rank.Ace ? 1 : resolved;
+    };
+    return [...pattern.cards].sort((a, b) => {
+      if (pattern.type === 'triple_pair') {
+        const main = Number(rank(b) === pattern.rank) - Number(rank(a) === pattern.rank);
+        if (main) return main;
+      }
+      return rank(a) - rank(b) || suitOrder[b.suit] - suitOrder[a.suit] || a.id - b.id;
+    });
+  }) : [];
+  for (const card of arrangedGroups ? [] : displayedCards) {
     const last = groups[groups.length - 1];
     if (!last || groupKey(last[0]) !== groupKey(card)) groups.push([card]);
     else last.push(card);
@@ -116,7 +129,7 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
 
   return (
     <div
-      className={`hand-cards${dragging ? ' is-dragging' : ''}`}
+      className={`hand-cards${arrangedGroups ? ' is-arranged' : ''}${dragging ? ' is-dragging' : ''}`}
       onPointerDown={startGesture}
       onPointerMove={moveGesture}
       onPointerUp={event => { moveGesture(event); finishGesture(event); }}
@@ -171,6 +184,10 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
               </div>
             );
           })}
+          {arrangedGroups && <span className="hand-group-label">
+            {({ single: '单张', pair: '对子', triple: '三张', triple_pair: '三带二', straight: '顺子', consecutive_pair: '三连对', plane: '二连三', flush_straight: '同花顺', king_bomb: '四王炸' } as Record<string, string>)[arrangedGroups[groupIndex].type]
+              || `${group.length}炸`}
+          </span>}
         </div>
       ))}
     </div>
