@@ -5,7 +5,51 @@ import { createDeck } from './card';
 import { generateLegalPlays, findBestPlay } from './ai';
 import { identifyPattern } from './patterns';
 import { canBeat } from './compare';
-import { Card } from '../../../shared/types';
+import { Card, GamePhase } from '../../../shared/types';
+
+test('hint without a legal response auto-passes once and starts the next turn', () => {
+  const room = new GameRoom('hint-pass', 'p0');
+  for (let i = 0; i < 4; i++) room.addPlayer(`p${i}`, `P${i}`, 2, null);
+  const deck = createDeck();
+  try {
+    room.startGame();
+    room.state!.currentPlayerIndex = 0;
+    room.state!.lastPlay = identifyPattern([deck.find(c => c.rank === 16)!], 2)!;
+    room.state!.lastPlayPlayerIndex = 3;
+    room.hands.set('p0', [deck.find(c => c.rank === 3)!]);
+    const previousTimer = room.turnTimer;
+    assert.deepEqual(room.requestHint('p0'), { cards: [], passed: true });
+    assert.equal(room.state!.currentPlayerIndex, 1);
+    assert.equal(room.state!.passCount, 1);
+    assert.ok(room.turnTimer && room.turnTimer !== previousTimer);
+    assert.ok(room.state!.actionDeadline! > Date.now());
+    assert.equal(room.requestHint('p0'), null);
+    assert.equal(room.state!.passCount, 1);
+  } finally { room.clearPlayers(); }
+});
+
+test('hint preserves legal responses and never auto-passes a lead or invalid request', () => {
+  const room = new GameRoom('hint-guards', 'p0');
+  for (let i = 0; i < 4; i++) room.addPlayer(`p${i}`, `P${i}`, 2, null);
+  const deck = createDeck();
+  try {
+    assert.equal(room.requestHint('p0'), null);
+    room.startGame();
+    room.state!.currentPlayerIndex = 0;
+    const hand = [deck.find(c => c.rank === 4)!];
+    room.hands.set('p0', hand);
+    assert.deepEqual(room.requestHint('p0'), { cards: hand, passed: false });
+    room.state!.lastPlay = identifyPattern([deck.find(c => c.rank === 3)!], 2)!;
+    room.state!.lastPlayPlayerIndex = 3;
+    assert.deepEqual(room.requestHint('p0'), { cards: hand, passed: false });
+    assert.equal(room.requestHint('p1'), null);
+    assert.equal(room.requestHint('spectator'), null);
+    assert.equal(room.state!.currentPlayerIndex, 0);
+    assert.equal(room.state!.passCount, 0);
+    room.state!.phase = GamePhase.RoundEnd;
+    assert.equal(room.requestHint('p0'), null);
+  } finally { room.clearPlayers(); }
+});
 
 test('hint cycles every physical response including four tens and wraps', () => {
   const room = new GameRoom('hint-test', 'p0');

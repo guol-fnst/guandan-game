@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { PlayerInfo as PlayerInfoType } from '../sharedTypes';
 import './PlayerInfo.css';
+import PlayerAvatar from './PlayerAvatar';
 
 interface Props {
   player: PlayerInfoType;
@@ -58,7 +59,7 @@ export default function PlayerInfoComponent({ player, position, isCurrent, isMe,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 14, fontWeight: 700, color: '#fff',
         }}>
-          {player.name.charAt(0)}
+          <PlayerAvatar player={player} />
         </div>
         {isMe && (
           <span style={{

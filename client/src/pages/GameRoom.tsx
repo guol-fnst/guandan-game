@@ -539,19 +539,6 @@ export default function GameRoom() {
               ) : (
                 <>
                   <button
-                    className="btn-primary play-action"
-                    onClick={handlePlay}
-                    disabled={!isMyTurn || selectedCardIds.size === 0}
-                    style={{
-                      opacity: isMyTurn ? 1 : 0.4,
-                      padding: '8px 24px',
-                      fontSize: 14,
-                      fontWeight: 700,
-                    }}
-                  >
-                    出牌<span className="play-card-count"> ({selectedCardIds.size}张)</span>
-                  </button>
-                  <button
                     className="btn-secondary hint-action"
                     onClick={() => { getSocket()?.emit('hint', { currentCardIds: [...selectedCardIds] }); }}
                     disabled={!isMyTurn}
@@ -565,6 +552,19 @@ export default function GameRoom() {
                     }}
                   >
                     提示
+                  </button>
+                  <button
+                    className="btn-primary play-action"
+                    onClick={handlePlay}
+                    disabled={!isMyTurn || selectedCardIds.size === 0}
+                    style={{
+                      opacity: isMyTurn ? 1 : 0.4,
+                      padding: '8px 24px',
+                      fontSize: 14,
+                      fontWeight: 700,
+                    }}
+                  >
+                    出牌<span className="play-card-count"> ({selectedCardIds.size}张)</span>
                   </button>
                   <button
                     className="btn-secondary pass-action"

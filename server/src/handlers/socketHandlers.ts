@@ -255,8 +255,8 @@ export function setupSocketHandlers(io: Server) {
       const currentCardIds = Array.isArray(data?.currentCardIds)
         ? data.currentCardIds.filter(Number.isInteger)
         : [];
-      const cards = room.getHintCards(socket.userId, currentCardIds);
-      socket.emit('hint_result', { cards });
+      const result = room.requestHint(socket.userId, currentCardIds);
+      if (result) socket.emit('hint_result', result);
     });
 
     socket.on('declare_play', (data: { cards: any[] }, reply: any) => {
