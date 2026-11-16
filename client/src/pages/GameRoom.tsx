@@ -554,13 +554,14 @@ export default function GameRoom() {
           )}
         </div>
 
+        {!isSpectator && gameState?.phase === GamePhase.Playing && myCards.length > 0 && <button
+          className="hand-arrange-toggle btn-secondary"
+          aria-pressed={arrangeEnabled}
+          onClick={() => { setArrangeEnabled(value => !value); clearSelection(); }}
+        >{arrangeEnabled ? '恢复' : '一键理牌'}</button>}
+
         {/* Bottom - my hand cards */}
         {!isSpectator && <div className="game-bottom-area">
-          {gameState?.phase === GamePhase.Playing && myCards.length > 0 && <button
-            className="hand-arrange-toggle btn-secondary"
-            aria-pressed={arrangeEnabled}
-            onClick={() => { setArrangeEnabled(value => !value); clearSelection(); }}
-          >{arrangeEnabled ? '恢复' : '一键理牌'}</button>}
           <div className="game-action-bar">
             <div className="game-play-actions">
               {gameState?.phase === 'return_tribute' ? (
