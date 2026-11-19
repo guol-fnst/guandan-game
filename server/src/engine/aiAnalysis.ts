@@ -368,10 +368,11 @@ function abstractPattern(type: PatternType, rank: Rank, length: number): CardPat
   return { type, rank, length, cards: [] };
 }
 
-/** Conservative public-card proof. Pooling all unseen cards may report threats
- * that no individual opponent actually owns, but can never certify a false lock. */
+/** Pool unseen cards conservatively. With a seat's public remaining count,
+ * the proof applies only to responses by a hand of at most that size. */
 export function publicControlEvidence(
   play: CardPattern, hand: Card[], level: number, context?: AiDecisionContext,
+  maxReplyCards = Infinity,
 ): PublicControlEvidence | null {
   if (!context) return null;
   let contextCache = publicControlCache.get(context);
@@ -379,7 +380,7 @@ export function publicControlEvidence(
     contextCache = new Map();
     publicControlCache.set(context, contextCache);
   }
-  const cacheKey = `${level}:${hand.map(card => card.id).sort((a, b) => a - b).join(',')}:${play.type}:${play.rank}:${play.length}`;
+  const cacheKey = `${level}:${hand.map(card => card.id).sort((a, b) => a - b).join(',')}:${play.type}:${play.rank}:${play.length}:${maxReplyCards}`;
   if (contextCache.has(cacheKey)) return contextCache.get(cacheKey)!;
   const knowledge = buildPublicKnowledge(hand, context);
   if (!knowledge) {
@@ -412,7 +413,7 @@ export function publicControlEvidence(
       }
     }
   }
-  const bombPossible = possibleBombs.some(candidate => !isBombPattern(play) || canBeat(candidate, play, level));
+  const bombPossible = possibleBombs.some(candidate => candidate.length <= maxReplyCards && canBeat(candidate, play, level));
   let ordinaryResponse = false;
   if (play.type === PatternType.Single) {
     ordinaryResponse = knowledge.unseen.some(card =>
@@ -429,7 +430,7 @@ export function publicControlEvidence(
     // a complete declaration feasibility proof before they can be certified.
     ordinaryResponse = true;
   }
-  const evidence = { unbeatable: !ordinaryResponse && !bombPossible, bombPossible };
+  const evidence = { unbeatable: (!ordinaryResponse || play.length > maxReplyCards) && !bombPossible, bombPossible };
   contextCache.set(cacheKey, evidence);
   return evidence;
 }

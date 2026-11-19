@@ -1183,6 +1183,36 @@ test('repeated leads with three to five cards trigger an intact bomb defence bef
     'do not spend bombs on a calm large hand with no ordinary continuation');
 });
 
+test('deny a double win with a secure productive block, across levels and only under finishing pressure', () => {
+  const deck = createDeck();
+  for (const level of [Rank.Two, Rank.Six, Rank.Ace]) {
+    const group = deck.filter(c => c.rank === level);
+    const hand = [...group.filter(c => c.suit !== Suit.Heart).slice(0, 4),
+      ...group.filter(c => c.suit === Suit.Heart),
+      ...[11, 10, 8, 5].map(rank => deck.find(c => c.rank === rank)!)];
+    const enemy = deck.filter(c => c.rank === Rank.King).slice(0, 4);
+    const ally = deck.filter(c => c.rank === Rank.Four).slice(0, 7);
+    const ctx = contextFor([hand, enemy, ally, []]);
+    ctx.lastPlayPlayerIndex = 1;
+    ctx.players[3].finishRank = 1;
+    const last: CardPattern = { type: PatternType.Bomb4, rank: Rank.Nine, length: 4, cards: [] };
+    const all = generateLegalPlays(hand, level);
+    const replies = all.filter(p => [PatternType.Bomb4, PatternType.Bomb5, PatternType.Bomb6].includes(p.type)
+      && p.rank === level);
+    const estimator = createTurnEstimator(hand, all, Infinity);
+    const analysis: DecisionAnalysis = { handTurns: estimator.whole(), candidates: {},
+      simulation: { status: 'not_endgame', elapsedMs: 0, samples: 0 } };
+    for (const p of replies) analysis.candidates[analysisKey(p)] = { remainingTurns: estimator.after(p) };
+    const result = finalizeAiDecision(null, replies, hand, last, false, level, ctx, analysis, null);
+    assert.equal(result?.type, PatternType.Bomb4);
+    assert.ok(result!.cards.every(c => c.suit !== Suit.Heart), 'retain both wildcards');
+    assert.equal(publicControlEvidence(result!, hand, level, ctx)?.bombPossible, true);
+    assert.equal(publicControlEvidence(result!, hand, level, ctx, enemy.length)?.bombPossible, false);
+    ctx.players[3].finishRank = null;
+    assert.equal(finalizeAiDecision(null, replies, hand, last, false, level, ctx, analysis, null), null);
+  }
+});
+
 
 test('whole-hand strategy briefing generalizes natural level assets across all thirteen levels', () => {
   const deck=createDeck();

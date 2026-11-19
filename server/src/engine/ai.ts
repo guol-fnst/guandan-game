@@ -989,7 +989,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45,
+  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1233,10 +1233,23 @@ export function finalizeAiDecision(
     const repeated = opponentControlStreak(context) >= 2;
     const urgent = leader.cardCount <= 2;
     const finishPressure = repeated && leader.cardCount <= 5;
+    // Once the opponents have first place, only this leader can complete
+    // their double win. Compare replies against that seat's public capacity.
+    // Require a secure block which also completes one of our own hand groups.
+    const denyingDouble = leader.cardCount <= 5 && context.players.some(player =>
+      player.relation === 'opponent' && player.finishRank === 1);
+    const secureBlocks = denyingDouble && analysis?.handTurns.exact ? candidates.filter(play => {
+      const after = analysis.candidates[analysisKey(play)]?.remainingTurns;
+      if (!after?.exact || after.turns >= analysis.handTurns.turns) return false;
+      const proof = publicControlEvidence(play, hand, level, context, leader.cardCount);
+      return proof && (isBombPattern(play) ? !proof.bombPossible : proof.unbeatable);
+    }) : [];
+    const secureBlock = secureBlocks.sort((a, b) =>
+      openingControlCost(a, hand, level) - openingControlCost(b, hand, level))[0];
     const ordinaryContest = leader.cardCount <= 12 && hand.length >= leader.cardCount + 3
       && [PatternType.Single, PatternType.Pair].includes(last.type);
     const partnerHead = context.players.some(player => player.relation === 'partner' && player.finishRank === 1);
-    if (repeated || urgent || ordinaryContest || (partnerHead && leader.cardCount <= 5)) {
+    if (secureBlock || repeated || urgent || ordinaryContest || (partnerHead && leader.cardCount <= 5)) {
       const allPlays = generateLegalPlays(hand, level);
       const counts = getRankCounts(hand);
       const ordinary = candidates.filter(play => {
@@ -1256,7 +1269,8 @@ export function finalizeAiDecision(
       const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context, allPlays) : ruleFallback;
       const readyExitReplies = candidates.filter(play => canContestWithReadyExit(play, level, context, analysis));
       const ordinaryReplies = ordinary.length ? ordinary : readyExitReplies;
-      let response = ordinaryReplies.length ? orderCandidates(ordinaryReplies, hand, level, false, context, analysis, allPlays)[0] : null;
+      let response: CardPattern | null = secureBlock ?? (ordinaryReplies.length
+        ? orderCandidates(ordinaryReplies, hand, level, false, context, analysis, allPlays)[0] : null);
       if (!response && (urgent || partnerHead)) response = fallback;
       if (!response && finishPressure) {
         // An intact ordinary bomb can change the lead shape before a
@@ -1273,8 +1287,10 @@ export function finalizeAiDecision(
       if (response && candidates.some(play => analysisKey(play) === analysisKey(response))
         && !reliablyBetterSimulation(analysis?.passSimulation, analysis?.candidates[analysisKey(response)]?.simulation)) {
         const result = guard(response);
-        if (result) {
-          accepted = [...accepted, { rule: 'urgent_interception', priority: AI_POLICY_PRIORITY.urgent_interception,
+        if (result && (response !== secureBlock || result.cards.length === hand.length
+          || secureBlocks.some(play => analysisKey(play) === analysisKey(result)))) {
+          const rule = secureBlock === response ? 'deny_double_win' : 'urgent_interception';
+          accepted = [...accepted, { rule, priority: AI_POLICY_PRIORITY[rule],
             from: policyAction(selected), to: policyAction(response) }, ...recent];
           selected = result;
         }
