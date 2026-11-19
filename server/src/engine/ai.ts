@@ -989,7 +989,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50, team_trick: 45,
+  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1512,6 +1512,28 @@ export async function findSmartPlay(
   const localNotes = corrections;
   options.onLocalReady?.(local);
 
+  // Compare the two actions that would actually be played, including PASS.
+  // Full-game evidence takes precedence over a one-cycle estimate. When the
+  // estimates are close the model retains discretion about the route.
+  const preferLocal = (modelPlay: CardPattern | null) => {
+    if (!context || key(local) === key(modelPlay) || modelPlay?.cards.length === hand.length) return false;
+    const result = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.simulation : analysis.passSimulation;
+    if (reliablyBetterSimulation(result(modelPlay), result(local))) return false;
+    if (reliablyBetterSimulation(result(local), result(modelPlay))) return true;
+    const entry = modelPlay && analysis.candidates[key(modelPlay)];
+    if (entry?.endgameRoute?.controlProven) return false;
+    const localValue = value(local), modelValue = value(modelPlay);
+    if (Number.isFinite(localValue) && Number.isFinite(modelValue)) {
+      return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay);
+    }
+    // Without shared tactical evidence, only count an exact partition loss;
+    // never equate missing simulation data with a zero win rate.
+    const turns = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
+    const l = turns(local), m = turns(modelPlay);
+    return !!l?.exact && !!m?.exact && l.turns < m.turns && !!local && !!modelPlay
+      && openingControlCost(local, hand, currentLevel) <= openingControlCost(modelPlay, hand, currentLevel);
+  };
+
   const primary = normalizeAiSelection(
     (selection ?? DEFAULT_AI_SELECTION).provider, (selection ?? DEFAULT_AI_SELECTION).model,
   );
@@ -1538,7 +1560,12 @@ export async function findSmartPlay(
       );
       // undefined means the model was unavailable/invalid; null is an intentional pass.
       if (llmResult !== undefined) {
-        const final = decide(llmResult);
+        let final = decide(llmResult);
+        if (preferLocal(final)) {
+          corrections = [...corrections, { rule: 'team_baseline', priority: AI_POLICY_PRIORITY.team_baseline,
+            from: policyAction(final), to: policyAction(local) }];
+          final = local;
+        }
         // Rebuild from the executed action even when a guard changed it or the
         // model omitted a plan. Model prose is never evidence of retained cards.
         const grounded = groundStrategyPlan(hand, allPlays, final, analysis);

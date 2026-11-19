@@ -27,6 +27,7 @@ function policy(engine: typeof current, mode: string, calls: Record<string, numb
         p => { plan = p; }, trace => {
           calls[trace.source] = (calls[trace.source] || 0) + 1;
           if (trace.corrections?.some(note => note.rule === 'team_trick')) calls.teamTrick = (calls.teamTrick || 0) + 1;
+          if (trace.corrections?.some(note => note.rule === 'team_baseline')) calls.teamBaseline = (calls.teamBaseline || 0) + 1;
         }, { useModel: mode === 'model' });
     } finally {
       Math.random = original;
