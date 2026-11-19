@@ -8,7 +8,7 @@ import { identifyPattern, isValidPlay, declarePatterns } from '../engine/pattern
 import { canBeat, canFreePlay, isBombPattern } from '../engine/compare';
 import { getTeam, getLevelDelta, canResistTribute, selectTributeCard, selectReturnTributeCard, isValidReturnTributeCard } from '../engine/rules';
 import type { AiDecisionTrace } from '../engine/ai';
-import { findBestPlay, findSmartPlay, generateLegalPlays } from '../engine/ai';
+import { findSmartPlay, generateLegalPlays } from '../engine/ai';
 import type { AiDecisionContext, AiRecentAction, AiStrategyPlan, AiStrategyMemory } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
 import { recordAiDecision } from '../engine/aiTelemetry';
@@ -32,6 +32,8 @@ export class GameRoom {
   rankings: { playerId: string; rank: number }[] = [];
   currentLevel: number = Rank.Two;
   turnTimer: ReturnType<typeof setTimeout> | null = null;
+  private turnGeneration = 0;
+  private preparedPlay: CardPattern | null | undefined;
   recentActions: AiRecentAction[] = [];
   private aiStrategyMemory = new Map<string, AiStrategyMemory>();
   private publicActionHistory: AiRecentAction[] = [];
@@ -599,6 +601,8 @@ export class GameRoom {
 
   private startTurn() {
     if (!this.state) return;
+    const generation = ++this.turnGeneration;
+    this.preparedPlay = undefined;
     if (this.turnTimer) clearTimeout(this.turnTimer);
 
     const currentPlayer = this.players[this.state.currentPlayerIndex];
@@ -608,7 +612,7 @@ export class GameRoom {
       // Keep the same watchdog for every player. aiPlay snapshots the state,
       // so a delayed model response is ignored after this timeout advances it.
       this.turnTimer = setTimeout(() => this.handleTimeout(), TURN_TIMEOUT);
-      setTimeout(() => this.aiPlay(), 500);
+      setTimeout(() => { if (this.turnGeneration === generation) void this.aiPlay(); }, 500);
     } else {
       this.turnTimer = setTimeout(() => this.handleTimeout(), TURN_TIMEOUT);
     }
@@ -968,8 +972,9 @@ export class GameRoom {
     return { success: true };
   }
 
-  private async aiPlay() {
+  private async aiPlay(useModel = this.aiUseLLM) {
     if (!this.state) return;
+    const generation = this.turnGeneration;
     const decisionStarted = performance.now();
     let decisionFailed = false;
     try {
@@ -987,8 +992,7 @@ export class GameRoom {
       const context = this.getAiDecisionContext(playerIdx);
       // Smart rooms analyze every non-forced decision, including follow vs PASS.
       // Rooms may explicitly opt out for deterministic rule-based play.
-      const pattern = this.aiUseLLM
-        ? await findSmartPlay(
+      const pattern = await findSmartPlay(
             hand,
             this.state.lastPlay,
             isFreePlay,
@@ -997,18 +1001,15 @@ export class GameRoom {
             this.aiModelSelection,
             value => { plan = value; },
             value => { trace = value; },
-          )
-        : findBestPlay(
-            hand,
-            this.state.lastPlay,
-            isFreePlay,
-            this.state.currentLevel,
-            context,
+            { useModel, onLocalReady: action => {
+              if (this.turnGeneration === generation) this.preparedPlay = action;
+            } },
           );
       // Ignore a delayed model response if the round or active player changed.
       if (
         !this.state ||
         this.state !== expectedState ||
+        this.turnGeneration !== generation ||
         this.state.phase !== GamePhase.Playing ||
         this.state.currentPlayerIndex !== playerIdx ||
         this.players[playerIdx]?.id !== player.id
@@ -1016,20 +1017,10 @@ export class GameRoom {
         return;
       }
 
-      if (pattern) {
-        executed = this.playCards(player.id, pattern.cards, { type: pattern.type, rank: pattern.rank }).success;
-      } else {
-        if (this.state.lastPlay) {
-          executed = this.handlePass(player.id).success;
-        } else {
-          const fallback = findBestPlay(
-            hand, null, true, this.state.currentLevel, this.getAiDecisionContext(playerIdx),
-          );
-          if (fallback) {
-            this.playCards(player.id, fallback.cards, { type: fallback.type, rank: fallback.rank });
-          }
-        }
-      }
+      executed = pattern
+        ? this.playCards(player.id, pattern.cards, { type: pattern.type, rank: pattern.rank }).success
+        : this.handlePass(player.id).success;
+      if (!executed) throw new Error('Decision could not be applied to the current trick');
       if (executed && trace) console.info('[AI decision]', JSON.stringify({
         room: this.id, round: expectedRound, seat: playerIdx, action: actionIndex + 1,
         ...trace, played: pattern ? `${pattern.type}:${pattern.rank}` : 'PASS',
@@ -1043,24 +1034,14 @@ export class GameRoom {
     } catch (e) {
       decisionFailed = true;
       console.error('aiPlay error:', e);
-      // Fallback: just pass or force play smallest single
-      if (this.state && this.state.lastPlay) {
-        try { this.handlePass(this.players[this.state.currentPlayerIndex]?.id); } catch {}
-      } else if (this.state) {
-        const player = this.players[this.state.currentPlayerIndex];
-        const hand = this.hands.get(player?.id) || [];
-        if (hand.length > 0) {
-          const fallback = findBestPlay(
-            hand, null, true, this.state.currentLevel,
-            this.getAiDecisionContext(this.state.currentPlayerIndex),
-          );
-          if (fallback) {
-            try {
-              this.playCards(player.id, fallback.cards, { type: fallback.type, rank: fallback.rank });
-            } catch {}
-          }
-        }
-      }
+      if (generation !== this.turnGeneration || this.state?.phase !== GamePhase.Playing) return;
+      if (this.executePreparedPlay()) return;
+      // Only reached if the shared evaluator itself failed before providing
+      // a usable move. Preserve turn liveness with a legal emergency action.
+      const player = this.players[this.state.currentPlayerIndex];
+      const hand = this.hands.get(player.id);
+      if (this.state.lastPlay) this.handlePass(player.id);
+      else if (hand?.length) this.playCards(player.id, [hand[0]]);
     } finally {
       recordAiDecision(this.aiUseLLM, performance.now() - decisionStarted, decisionFailed);
     }
@@ -1069,19 +1050,20 @@ export class GameRoom {
   private handleTimeout() {
     if (!this.state) return;
     const player = this.players[this.state.currentPlayerIndex];
-    if (!this.state.lastPlay) {
-      const hand = this.hands.get(player.id) || [];
-      const fallback = findBestPlay(
-        hand, null, true, this.state.currentLevel,
-        this.getAiDecisionContext(this.state.currentPlayerIndex),
-      );
-      if (fallback) {
-        this.playCards(player.id, fallback.cards, { type: fallback.type, rank: fallback.rank });
-      }
-      else this.handlePass(player.id);
-    } else {
-      this.handlePass(player.id);
+    if (player.isAI || !this.state.lastPlay) {
+      ++this.turnGeneration;
+      if (!this.executePreparedPlay()) void this.aiPlay(false);
+      return;
     }
+    this.handlePass(player.id);
+  }
+
+  private executePreparedPlay(): boolean {
+    if (!this.state || this.preparedPlay === undefined) return false;
+    const player = this.players[this.state.currentPlayerIndex];
+    const play = this.preparedPlay;
+    return play ? this.playCards(player.id, play.cards, { type: play.type, rank: play.rank }).success
+      : this.handlePass(player.id).success;
   }
 
   private updatePlayerCardCount() {

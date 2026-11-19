@@ -6,7 +6,7 @@ import { createDeck } from './card';
 import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates, removeWastefulWildRealizations, groundStrategyPlan, pruneOpeningWildLeads } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
 } from './aiAnalysis';
@@ -302,6 +302,28 @@ test('rollout applies catch-wind and stops when one team finishes first and seco
   assert.equal(JSON.stringify(context.actionHistory), originalHistory, 'simulation must not mutate live history');
 });
 
+test('paired one-cycle forecast distinguishes feeding a finishing partner from feeding the next opponent', () => {
+  const deck = createDeck();
+  const take = (rank: Rank) => deck.find(c => c.rank === rank)!;
+  const hands = [[take(3), take(7)], [take(5)], [take(8)], [take(9), take(10)]];
+  const context = contextFor(hands);
+  context.publicTransfers = hands.flatMap((cards, seat) => seat === 0 ? []
+    : cards.map(card => ({ card, fromSeat: 0, toSeat: seat })));
+  const leads = generateLegalPlays(hands[0], 2);
+  const f = forecastTrick(hands[0], leads, null, 2, context, generateLegalPlays, Infinity, () => 0.5)!;
+  const low = f[analysisKey(leads.find(p => p.rank === 3)!)];
+  const high = f[analysisKey(leads.find(p => p.rank === 7)!)];
+  assert.equal(low.enemyExit, 1);
+  assert.equal(high.allyExit, 1);
+  assert.equal(high.samples, low.samples);
+  assert.equal(f.PASS, undefined);
+  context.lastPlayPlayerIndex = 1;
+  context.passCount = 2;
+  const pass = forecastTrick(hands[0], [], leads[0], 2, context, generateLegalPlays, Infinity)!.PASS;
+  assert.equal(pass.teamAhead, 0);
+  assert.equal(pass.enemyExit, 0, 'closing the trick gives the original leader initiative, without another response');
+});
+
 test('endgame uses balanced complete samples and labels exhausted/incomplete runs', async () => {
   const deck = createDeck();
   const hands = [[deck[0], deck[1]], [deck[2], deck[3]], [deck[4], deck[5]], [deck[6], deck[7]]];
@@ -379,6 +401,7 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.ok(requestBody.messages[1].content.includes('下一步，32字内'));
     assert.ok(requestBody.messages[1].content.includes('20字内'));
     assert.ok(requestBody.messages[1].content.includes('decision_check'));
+    assert.ok(requestBody.messages[1].content.includes('direct_finish、block_opponent、help_partner、own_route、organize、hold_control'));
     assert.deepEqual(requestBody.thinking, { type: 'disabled' });
     assert.equal(requestBody.reasoning_effort, undefined);
     assert.equal(requestBody.temperature, undefined);
@@ -876,6 +899,25 @@ test('protect a one-play exit unless interception is urgent or publicly secure',
   assert.equal(finalizeAiDecision(ten, [ten], hand, last, false, 5, safe, analysis), ten);
 });
 
+test('last responder can split a ready pair cheaply against repeated opponent leads', async () => {
+  const hand = rankedHand([5, 5]);
+  const candidates = generateLegalPlays(hand, Rank.Two).filter(p => p.type === PatternType.Single);
+  const last = generateLegalPlays([{ id: 10, rank: Rank.Four, suit: Suit.Diamond }], Rank.Two)[0];
+  const context = contextFor([hand, rankedHand([3, 6, 7, 8, 9, 10, 11]), [], rankedHand([3, 6, 12])]);
+  context.players[2].finishRank = 1;
+  context.lastPlayPlayerIndex = 1;
+  context.passCount = 1;
+  context.actionHistory = [{ seatIndex: 1, action: 'play', pattern: last },
+    { seatIndex: 3, action: 'pass' }, { seatIndex: 0, action: 'pass' },
+    { seatIndex: 1, action: 'play', pattern: last }, { seatIndex: 3, action: 'pass' }];
+  const analysis = await analyzeDecision(hand, generateLegalPlays(hand, Rank.Two), candidates, last,
+    Rank.Two, undefined, findBestPlay, { budgetMs: 100 });
+  assert.equal(finalizeAiDecision(candidates[0], candidates, hand, last, false, Rank.Two, context, analysis)?.rank, Rank.Five);
+  assert.equal(finalizeAiDecision(null, candidates, hand, last, false, Rank.Two, context, analysis)?.rank, Rank.Five);
+  context.passCount = 0;
+  assert.equal(finalizeAiDecision(candidates[0], candidates, hand, last, false, Rank.Two, context, analysis), null);
+});
+
 
 test('short free-lead probes survive the weakest-card guard but follow economy remains', () => {
   const hand = rankedHand([2, 6, 7, 8]);
@@ -1298,10 +1340,36 @@ test('calm opening preserves a flush straight when a disjoint ordinary route is 
   assert.equal(analysisKey(preserved), analysisKey(ordinary));
   assert.ok(corrections.some(correction => correction.rule === 'opening_resource'));
 
+  context.players[1].cardCount = 17;
+  assert.equal(enforceTeamStrategy(flush, candidates, hand, null, true, Rank.Two, context, analysis), ordinary,
+    'the same resource comparison applies to a calm midgame lead');
+  context.players[1].cardCount = 5;
+  assert.equal(enforceTeamStrategy(flush, candidates, hand, null, true, Rank.Two, context, analysis), flush,
+    'respect closeout pressure');
+  context.players[1].cardCount = 17;
   analysis.candidates[analysisKey(ordinary)].remainingTurns.turns = 5;
   corrections = [];
   const efficient = enforceTeamStrategy(flush, candidates, hand, null, true, Rank.Two, context, analysis,
     correction => corrections.push(correction))!;
   assert.equal(analysisKey(efficient), analysisKey(flush),
     'the guard does not ban a flush straight that uniquely improves the partition');
+});
+
+test('calm midgame lead can find a bomb-preserving singleton outside the model shortlist', () => {
+  const hand = rankedHand([14, 12, 11, 11, 10, 10, 10, 10, 7, 3, 3, 3, 3, 2, 2, 2, 2]);
+  hand[0].suit = Suit.Heart;
+  const plays = generateLegalPlays(hand, Rank.Ace);
+  const bomb = plays.find(play => play.type === PatternType.Bomb4 && play.rank === Rank.Two
+    && !play.substitutions?.length)!;
+  const context = contextFor([hand, [], [], []]);
+  context.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 22; });
+  const analysis: DecisionAnalysis = {
+    handTurns: { turns: 5, exact: true },
+    candidates: { [analysisKey(bomb)]: { remainingTurns: { turns: 4, exact: true } } },
+    simulation: { status: 'not_endgame', samples: 0, elapsedMs: 0 },
+  };
+  const selected = finalizeAiDecision(bomb, [bomb], hand, null, true, Rank.Ace, context, analysis,
+    undefined, undefined, plays);
+  assert.equal(selected?.type, PatternType.Single);
+  assert.equal(selected?.rank, Rank.Seven);
 });

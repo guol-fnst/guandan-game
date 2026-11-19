@@ -58,19 +58,33 @@ const DECISION_GOALS = new Set<AiDecisionCheck['goal']>([
 ]);
 const RESOURCE_USES = new Set<AiDecisionCheck['resourceUse']>(['preserve', 'spend_justified', 'none']);
 
+function decisionCheckFailure(value: unknown) {
+  if (value == null) return 'missing_strategy_check';
+  if (typeof value !== 'object' || Array.isArray(value)) return 'invalid_strategy_check';
+  const check = value as Record<string, unknown>;
+  if (['goal', 'resource_use', 'worst_reply', 'why_not_lower_cost'].some(key => check[key] == null)) {
+    return 'missing_strategy_field';
+  }
+  if (!DECISION_GOALS.has(check.goal as AiDecisionCheck['goal'])) return 'invalid_strategy_goal';
+  if (!RESOURCE_USES.has(check.resource_use as AiDecisionCheck['resourceUse'])) return 'invalid_resource_use';
+  if (typeof check.worst_reply !== 'string' || !check.worst_reply.trim()
+    || typeof check.why_not_lower_cost !== 'string' || !check.why_not_lower_cost.trim()) {
+    return 'invalid_strategy_reason';
+  }
+  return undefined;
+}
+
 /** A compact visible audit, not hidden chain-of-thought. Accepted live model
  * decisions must classify their goal, resource use and dangerous reply. */
 export function parseDecisionCheck(value: unknown): AiDecisionCheck | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (decisionCheckFailure(value)) return undefined;
   const check = value as Record<string, unknown>;
-  if (!DECISION_GOALS.has(check.goal as AiDecisionCheck['goal'])
-    || !RESOURCE_USES.has(check.resource_use as AiDecisionCheck['resourceUse'])
-    || typeof check.worst_reply !== 'string' || typeof check.why_not_lower_cost !== 'string') return undefined;
-  const worstReply = check.worst_reply.trim().slice(0, 40);
-  const whyNotLowerCost = check.why_not_lower_cost.trim().slice(0, 40);
-  if (!worstReply || !whyNotLowerCost) return undefined;
-  return { goal: check.goal as AiDecisionCheck['goal'],
-    resourceUse: check.resource_use as AiDecisionCheck['resourceUse'], worstReply, whyNotLowerCost };
+  return {
+    goal: check.goal as AiDecisionCheck['goal'],
+    resourceUse: check.resource_use as AiDecisionCheck['resourceUse'],
+    worstReply: (check.worst_reply as string).trim().slice(0, 40),
+    whyNotLowerCost: (check.why_not_lower_cost as string).trim().slice(0, 40),
+  };
 }
 
 /** Optional, bounded planning notes; malformed notes never invalidate an action. */
@@ -261,6 +275,7 @@ function compactActionGroups(
     })),
     equivalent_variants: equivalentCounts[actionId] || 1,
     cost: describeActionCost(option, hand, currentLevel, held),
+    next_cycle: includeAnalysis ? analysis?.trickForecast?.[analysisKey(option)] : undefined,
     analysis: includeAnalysis ? analysis?.candidates[analysisKey(option)] : undefined,
   }));
 }
@@ -333,8 +348,9 @@ ${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾�
 统一实战决策指南：
 ${STRATEGY_GUIDE}
 证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
-strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写且与所选实体牌一致；消耗A、王、自然级牌、逢人配或拆炸时resource_use只能是spend_justified。
+strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写。按所选动作的cost核对资源；消耗A、王、自然级牌、逢人配、拆炸或uses_bomb为true时，resource_use必须为spend_justified。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
+next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他座位各应一次后本方占先比例，partnerAhead是队友占先比例，allyExit、enemyExit是这一圈先有人走完的比例。这是短程估计，结合余牌手数与保留控制比较。
 从legal_actions返回action_id（跟牌可PASS），decision_check执行固定自检，strategy_plan写本次执行后的下一步及失效条件。不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
   const lastPlayerSnapshot = context?.players.find(player =>
@@ -435,6 +451,7 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
       from_seat: transfer.fromSeat, to_seat: transfer.toSeat, card: cardDisplayName(transfer.card),
     })),
     local_analysis: analysis ? {
+      pass_next_cycle: analysis.trickForecast?.PASS,
       hand_turns: analysis.handTurns, simulation: analysis.simulation,
       pass_simulation: analysis.passSimulation,
       caveat: '手数不含对手干扰；抽样模拟不是校准后的真实胜率',
@@ -454,11 +471,12 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
       legalPlays, representedCounts, hand, currentLevel, true, analysis,
     ),
   };
-  const outputFormat = normalizedSelection.provider === 'deepseek'
-    ? '{"action_id":数字或"PASS","brief_reason":"20字内","decision_check":{"goal":"六种目标之一","resource_use":"preserve|spend_justified|none","worst_reply":"20字内","why_not_lower_cost":"20字内"},"strategy_plan":{"next":"下一步，32字内","reconsider_when":"放弃条件，32字内"}}'
-    : '{"action_id":数字或"PASS","brief_reason":"不超过40个汉字","decision_check":{"goal":"direct_finish|block_opponent|help_partner|own_route|organize|hold_control","resource_use":"preserve|spend_justified|none","worst_reply":"最危险应手，40字内","why_not_lower_cost":"为何不用低成本候选，40字内"},"strategy_plan":{"next":"接下来怎么走，80字内","reconsider_when":"何时放弃此计划，80字内"}}';
+  const outputExample = '{"action_id":0,"decision_check":{"goal":"organize","resource_use":"preserve","worst_reply":"对手用更高同型接管","why_not_lower_cost":"该动作保住回手牌"},"brief_reason":"先走低组合","strategy_plan":{"next":"有牌权再领低对","reconsider_when":"对手报单"}}';
   const userPrompt = `请根据以下牌桌输入选择动作：\n${JSON.stringify(input)}\n
-只输出一个紧凑JSON，按以下顺序给出字段：${outputFormat}。不复述牌桌、候选或推理，不加额外字段或Markdown。只有跟牌时可选择PASS。`;
+只输出一个紧凑JSON。格式示例：${outputExample}
+必填action_id（整数或跟牌时的"PASS"）与decision_check的四个字段。
+goal必须是其中一项：${[...DECISION_GOALS].join('、')}。resource_use必须是其中一项：${[...RESOURCE_USES].join('、')}。worst_reply和why_not_lower_cost各20字内，无则填“无”。
+可选brief_reason（20字内）和strategy_plan（下一步，32字内；失效条件，32字内）。不复述牌桌、候选或推理，不加额外字段或Markdown。`;
   const promptCharacters = systemPrompt.length + userPrompt.length;
 
   try {
@@ -547,7 +565,7 @@ strategy_memory每回合重验；以当前手牌、verified_resources和strategy
       recordAiModelCall('invalid_response', performance.now() - modelStarted, promptCharacters);
       console.warn('[AI response]', JSON.stringify({
         provider: normalizedSelection.provider, model: normalizedSelection.model,
-        reason: !decisionCheck ? 'missing_strategy_check' : 'inconsistent_resource_check',
+        reason: inconsistentResource ? 'inconsistent_resource_check' : decisionCheckFailure(parsed.decision_check),
         round: context.roundNumber, seat: context.selfSeatIndex,
         action: context.actionHistory?.length,
       }));

@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
@@ -591,8 +591,10 @@ export function removeWastefulWildRealizations(plays: CardPattern[], level: numb
 export function compressCandidatesForModel(
   ordered: CardPattern[],
   currentLevel: number,
+  allPlays: CardPattern[] = ordered,
 ): CompressedAiCandidates {
   const groups = new Map<string, { play: CardPattern; count: number }>();
+  const flushes = allPlays.filter(p => p.type === PatternType.FlushStraight && !p.substitutions?.length);
   for (const play of ordered) {
     const substitutions = new Map((play.substitutions || []).map(card => [card.id, card]));
     const resolvedCounts = new Map<number, number>();
@@ -608,7 +610,8 @@ export function compressCandidatesForModel(
     const flushSuit = play.type === PatternType.FlushStraight
       ? (substitutions.get(play.cards[0]?.id) || play.cards[0])?.suit || ''
       : '';
-    const key = `${play.type}:${play.rank}:${play.length}:${declaredRanks}:w${wildcardCount}:s${flushSuit}`;
+    const retainsFlush = flushes.some(flush => flush.cards.every(c => !play.cards.some(used => used.id === c.id)));
+    const key = `${play.type}:${play.rank}:${play.length}:${declaredRanks}:w${wildcardCount}:s${flushSuit}:f${+retainsFlush}`;
     const existing = groups.get(key);
     if (existing) existing.count++;
     else groups.set(key, { play, count: 1 });
@@ -986,7 +989,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50,
+  economy: 100, continuation: 90, urgent_interception: 780, paired_outcome: 50, team_trick: 45,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1014,6 +1017,19 @@ function openingControlCost(play: CardPattern, hand: Card[], level: number): num
     + cost.broken_natural_bombs.length * 8 + bombCost;
 }
 
+function canContestWithReadyExit(
+  play: CardPattern, level: number, context: AiDecisionContext, analysis?: DecisionAnalysis,
+): boolean {
+  const leader = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
+  return analysis?.handTurns.exact === true && analysis.handTurns.turns === 1
+    && leader?.relation === 'opponent' && leader.finishRank === null && leader.cardCount <= 8
+    && (play.type === PatternType.Single || play.type === PatternType.Pair)
+    && play.cards.every(card => card.rank < Rank.Ace && card.rank !== level)
+    && analysis.candidates[analysisKey(play)]?.remainingTurns.turns === 1
+    && passPosition(context).closesTrick && opponentControlStreak(context) >= 2
+    && !reliablyBetterSimulation(analysis.passSimulation, analysis.candidates[analysisKey(play)]?.simulation);
+}
+
 /** Enforced for both LLM replies and local fallback; explanations alone cannot
  * authorize overtaking the partner or spending a stronger equivalent group. */
 export function enforceTeamStrategy(
@@ -1021,6 +1037,7 @@ export function enforceTeamStrategy(
   last: CardPattern | null, free: boolean, level: number,
   context?: AiDecisionContext, analysis?: DecisionAnalysis,
   onCorrection?: (correction: AiPolicyCorrection) => void,
+  fullLeadOptions?: CardPattern[],
 ): CardPattern | null {
   const changed = (from: CardPattern | null, to: CardPattern | null, rule: AiPolicyCorrection['rule']) => {
     if (onCorrection && from !== to && (from ? analysisKey(from) : 'PASS') !== (to ? analysisKey(to) : 'PASS')) {
@@ -1057,26 +1074,44 @@ export function enforceTeamStrategy(
       proposed = changed(proposed, replacement, 'opening_resource')!;
     }
   }
-  // A calm first lead should not spend a triple of aces, natural level cards,
-  // or jokers merely because five cards leave the hand at once. Compare the
-  // actual residual partition against other equally large leads. This remains
-  // a preference: a uniquely more efficient high lead, direct finish, or
-  // reliable paired simulation may still justify spending the resource.
-  if (opening) {
+  // Compare residual partitions before spending a bomb on a calm free lead,
+  // including midgame. Ordinary high groups keep the narrower opening rule.
+  const calmBombLead = free && context && isBombPattern(proposed)
+    && !context.players.some(player => player.finishRank === null
+      && ((player.relation === 'opponent' && player.cardCount <= 5)
+        || (player.relation === 'partner' && player.cardCount <= 2)));
+  if (opening || calmBombLead) {
     const proposedCost = openingControlCost(proposed, hand, level);
     const proposedAfter = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (proposedCost >= 4 && proposedAfter) {
       const protectedIds = isBombPattern(proposed)
         ? new Set(proposed.cards.map(card => card.id)) : undefined;
-      const alternatives = candidates.filter(play => !isBombPattern(play)
-        && play.cards.length >= proposed!.cards.length
+      const conservesControl = (play: CardPattern) => !isBombPattern(play)
+        && (protectedIds || play.cards.length >= proposed!.cards.length)
         && (!protectedIds || play.cards.every(card => !protectedIds.has(card.id)))
-        && openingControlCost(play, hand, level) <= proposedCost - 4
         && !play.cards.some(card => isWildCard(card, level) || isJoker(card))
+        && openingControlCost(play, hand, level) <= proposedCost - 4;
+      const alternatives = candidates.filter(play => conservesControl(play)
         && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined
         && analysis.candidates[analysisKey(play)].remainingTurns.turns <= proposedAfter.turns);
-      const replacement = orderCandidates(alternatives, hand, level, true, context, analysis)[0];
+      let replacement = orderCandidates(alternatives, hand, level, true, context, analysis)[0];
+      // The shortlist bounds the model prompt. A calm lead can still preserve
+      // a bomb if a legal ordinary route was omitted by compression or capping.
+      if (!replacement && calmBombLead && fullLeadOptions && analysis?.simulation.samples === 0) {
+        const deadline = performance.now() + 30;
+        const estimator = createTurnEstimator(hand, fullLeadOptions, deadline);
+        const ordinary = fullLeadOptions.filter(play => !isBombPattern(play))
+          .sort((a, b) => b.cards.length - a.cards.length);
+        for (const play of ordinary) {
+          if (performance.now() >= deadline) break;
+          if (conservesControl(play) && estimator.after(play).turns <= proposedAfter.turns) {
+            replacement = play;
+            break;
+          }
+        }
+      }
       if (replacement && !materiallyBetterSimulation(proposed, replacement, analysis)) {
+        if (protectedIds) return changed(proposed, replacement, 'opening_resource');
         proposed = changed(proposed, replacement, 'opening_resource')!;
       }
     }
@@ -1088,6 +1123,7 @@ export function enforceTeamStrategy(
     && p.finishRank === null && p.cardCount <= 2);
   if (!free && context && analysis?.handTurns.exact && analysis.handTurns.turns === 1
     && !immediateThreat && !catchesOpponent
+    && !canContestWithReadyExit(proposed, level, context, analysis)
     && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
     && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'ready_exit');
   const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
@@ -1175,13 +1211,13 @@ export function finalizeAiDecision(
   last: CardPattern | null, free: boolean, level: number,
   context?: AiDecisionContext, analysis?: DecisionAnalysis, ruleFallback?: CardPattern | null,
   onCorrections?: (corrections: AiPolicyCorrection[]) => void,
+  fullLeadOptions?: CardPattern[],
 ): CardPattern | null {
   let recent: AiPolicyCorrection[] = [];
   const guard = (play: CardPattern | null) => {
-    if (!onCorrections) return enforceTeamStrategy(play, candidates, hand, last, free, level, context, analysis);
     recent = [];
     return enforceTeamStrategy(play, candidates, hand, last, free, level, context, analysis,
-      correction => { recent.push(correction); });
+      onCorrections ? correction => { recent.push(correction); } : undefined, fullLeadOptions);
   };
   let selected = guard(proposed);
   let accepted = recent;
@@ -1218,7 +1254,9 @@ export function finalizeAiDecision(
             && group.cards.every(card => !play.cards.some(used => used.id === card.id)));
       });
       const fallback = ruleFallback === undefined ? findBestPlay(hand, last, free, level, context, allPlays) : ruleFallback;
-      let response = ordinary.length ? orderCandidates(ordinary, hand, level, false, context, analysis, allPlays)[0] : null;
+      const readyExitReplies = candidates.filter(play => canContestWithReadyExit(play, level, context, analysis));
+      const ordinaryReplies = ordinary.length ? ordinary : readyExitReplies;
+      let response = ordinaryReplies.length ? orderCandidates(ordinaryReplies, hand, level, false, context, analysis, allPlays)[0] : null;
       if (!response && (urgent || partnerHead)) response = fallback;
       if (!response && finishPressure) {
         // An intact ordinary bomb can change the lead shape before a
@@ -1324,6 +1362,12 @@ export interface AiDecisionTrace {
   model?: string;
   corrected: boolean;
   corrections?: AiPolicyCorrection[];
+  trickSamples?: number;
+}
+
+export interface DecisionOptions {
+  useModel?: boolean;
+  onLocalReady?: (action: CardPattern | null) => void;
 }
 
 export async function findSmartPlay(
@@ -1335,6 +1379,7 @@ export async function findSmartPlay(
   selection?: AiModelSelection,
   onPlan?: (plan: AiStrategyPlan) => void,
   onDecision?: (trace: AiDecisionTrace) => void,
+  options: DecisionOptions = {},
 ): Promise<CardPattern | null> {
   const allPlays = generateLegalPlays(hand, currentLevel);
   const ruleResult = findBestPlay(hand, lastPattern, isFreePlay, currentLevel, context, allPlays);
@@ -1366,11 +1411,24 @@ export async function findSmartPlay(
     ? ruleResult : legalPlays[0] || null;
   const completeCompressed = compressCandidatesForModel(
     orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays),
-    currentLevel,
+    currentLevel, allPlays,
   );
   const routeKeys = new Set(buildTeamRoutes(hand, allPlays, completeCompressed.plays,
     isFreePlay ? null : lastPattern, currentLevel, context, {}, generateLegalPlays)
     .flatMap(route => route.actionKey ? [route.actionKey] : []));
+  const largeDeal = context && (hand.length > 10 || context.players.reduce((n, seat) => n + seat.cardCount, 0) > 24);
+  const earlyForecast = largeDeal ? forecastTrick(hand, completeCompressed.plays, isFreePlay ? null : lastPattern,
+    currentLevel, context, generateLegalPlays, performance.now() + 150) : undefined;
+  if (earlyForecast && completeCompressed.plays.length > MODEL_ACTION_LIMIT) {
+    // Preserve alternatives with observed finish/denial potential before the
+    // prompt cap. Local ordering breaks ties between physical realizations.
+    const routes = completeCompressed.plays.map(play => ({ play, f: earlyForecast[analysisKey(play)] }));
+    for (const goal of ['allyExit', 'enemyExit'] as const) {
+      const sorted = [...routes].sort((a,b) => goal === 'allyExit'
+        ? b.f.allyExit - a.f.allyExit : a.f.enemyExit - b.f.enemyExit);
+      if (sorted[0].f[goal] !== sorted[sorted.length - 1].f[goal]) routeKeys.add(analysisKey(sorted[0].play));
+    }
+  }
   const compressed = limitModelCandidates(completeCompressed, MODEL_ACTION_LIMIT, routeKeys);
   legalPlays = retainNextPlayerReportMaximum(
     compressed.plays, completeLegalPlays, currentLevel, context,
@@ -1394,13 +1452,65 @@ export async function findSmartPlay(
     hand, allPlays, legalPlays, isFreePlay ? null : lastPattern,
     currentLevel, context, findBestPlay, { generateReplies: generateLegalPlays },
   );
+  if (context && analysis.simulation.samples < 8) {
+    analysis.trickForecast = largeDeal ? earlyForecast : forecastTrick(hand, legalPlays, isFreePlay ? null : lastPattern,
+      currentLevel, context, generateLegalPlays, performance.now() + 150);
+  }
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
   const fallbackResult = (isFreePlay || ruleResult) ? legalPlays[0] || ruleResult : null;
   let corrections: AiPolicyCorrection[] = [];
   const routeGoals = (play: CardPattern | null) => (analysis.teamRoutes || [])
     .filter(route => route.actionKey === (play ? analysisKey(play) : null)).map(route => route.goal);
-
+  const key = (p: CardPattern | null) => p ? analysisKey(p) : 'PASS';
+  const finalize = (play: CardPattern | null) => finalizeAiDecision(play, legalPlays, hand, lastPattern,
+    isFreePlay, currentLevel, context, analysis, ruleResult, notes => { corrections = notes; },
+    isFreePlay ? allPlays : undefined);
+  const teamProspect = (p: CardPattern | null) => {
+    const f = analysis.trickForecast?.[key(p)];
+    if (!f) return -Infinity;
+    const partner = context?.players.find(seat => seat.relation === 'partner');
+    return 3 * (f.allyExit - f.enemyExit) + f.teamAhead
+      + (partner && partner.cardCount > 0 && partner.cardCount <= 5 ? 0.5 * f.partnerAhead : 0);
+  };
+  const value = (p: CardPattern | null) => {
+    const turns = p ? analysis.candidates[key(p)]?.remainingTurns.turns : analysis.handTurns.turns;
+    if (turns === undefined) return -Infinity;
+    return teamProspect(p) - 0.6 * turns - (p ? 0.1 * openingControlCost(p, hand, currentLevel) : 0);
+  };
+  // A one-cycle model is strongest on observable near-term consequences.
+  // Changing only the predicted trick leader is insufficient evidence to
+  // dismantle a better partition or spend another control resource.
+  const improvesRoute = (before: CardPattern | null, after: CardPattern | null) => {
+    const a = analysis.trickForecast?.[key(before)], b = analysis.trickForecast?.[key(after)];
+    if (!a || !b) return false;
+    if (b.allyExit - a.allyExit + a.enemyExit - b.enemyExit >= 0.5) return true;
+    const remaining = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
+    const left = remaining(before), right = remaining(after);
+    const cost = (p: CardPattern | null) => p ? openingControlCost(p, hand, currentLevel) : 0;
+    return !!left?.exact && !!right?.exact && right.turns <= left.turns && cost(after) <= cost(before)
+      && b.teamAhead === 1 && a.teamAhead <= 0.25 && b.enemyExit <= a.enemyExit;
+  };
+  const pool: Array<CardPattern | null> = isFreePlay ? [...legalPlays] : [...legalPlays, null];
+  const challenger = analysis.trickForecast && pool.sort((a,b) => value(b) - value(a))[0];
+  const decide = (proposal: CardPattern | null) => {
+    const accepted = finalize(proposal);
+    if (accepted?.cards.length === hand.length || challenger === undefined
+      || !Number.isFinite(value(accepted)) || value(challenger) < value(accepted) + 0.8) return accepted;
+    const notes = corrections;
+    const alternative = finalize(challenger);
+    if (value(alternative) >= value(accepted) + 0.8
+      && teamProspect(alternative) >= teamProspect(accepted) + 0.5 && improvesRoute(accepted, alternative)) {
+      corrections = [...notes, { rule: 'team_trick', priority: AI_POLICY_PRIORITY.team_trick,
+        from: policyAction(accepted), to: policyAction(alternative) }];
+      return alternative;
+    }
+    corrections = notes;
+    return accepted;
+  };
+  const local = decide(fallbackResult);
+  const localNotes = corrections;
+  options.onLocalReady?.(local);
 
   const primary = normalizeAiSelection(
     (selection ?? DEFAULT_AI_SELECTION).provider, (selection ?? DEFAULT_AI_SELECTION).model,
@@ -1410,7 +1520,7 @@ export async function findSmartPlay(
     : normalizeAiSelection('deepseek', '');
   // Each provider has a 20s request deadline (including body read): at most
   // two attempts, with the existing 90s turn watchdog/stale-state guard intact.
-  for (const model of [primary, backup]) {
+  for (const model of options.useModel === false ? [] : [primary, backup]) {
     try {
       const llmResult = await llmFindBestPlay(
         hand,
@@ -1428,26 +1538,25 @@ export async function findSmartPlay(
       );
       // undefined means the model was unavailable/invalid; null is an intentional pass.
       if (llmResult !== undefined) {
-        const final = finalizeAiDecision(
-          llmResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
-        );
+        const final = decide(llmResult);
         // Rebuild from the executed action even when a guard changed it or the
         // model omitted a plan. Model prose is never evidence of retained cards.
         const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
         if (grounded) onPlan?.(grounded);
         onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
+          trickSamples: analysis.trickForecast?.[key(final)]?.samples,
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
       }
     } catch {}
   }
 
-  const final = finalizeAiDecision(
-    fallbackResult, legalPlays, hand, lastPattern, isFreePlay, currentLevel, context, analysis, ruleResult, value => { corrections = value; },
-  );
+  const final = local;
+  corrections = localNotes;
   const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
   if (grounded) onPlan?.(grounded);
-  onDecision?.({ source: 'local', routes: routeGoals(final), corrections, corrected:
+  onDecision?.({ source: 'local', routes: routeGoals(final), corrections,
+    trickSamples: analysis.trickForecast?.[key(final)]?.samples, corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;
 }

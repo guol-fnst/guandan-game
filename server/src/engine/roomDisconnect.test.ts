@@ -48,6 +48,27 @@ test('invalid play and invalid pass retain the turn timeout', () => {
   } finally { room.clearPlayers(); }
 });
 
+test('AI watchdog executes the prepared interception and clears it for the next turn', () => {
+  const { room } = setup();
+  try {
+    const deck = createDeck();
+    const self = room.state!.currentPlayerIndex, player = room.players[self];
+    player.isAI = true;
+    room.hands.set(player.id, [deck[4], deck[5]]);
+    room.state!.lastPlay = identifyPattern([deck[2]], 2)!;
+    room.state!.lastPlayPlayerIndex = (self + 3) % 4;
+    const internals = room as unknown as {
+      preparedPlay: ReturnType<typeof identifyPattern> | undefined;
+      handleTimeout(): void;
+    };
+    internals.preparedPlay = identifyPattern([deck[4]], 2);
+    internals.handleTimeout();
+    assert.equal(room.state!.lastPlayPlayerIndex, self);
+    assert.deepEqual(room.getHand(player.id).map(c => c.id), [deck[5].id]);
+    assert.equal(internals.preparedPlay, undefined);
+  } finally { room.clearPlayers(); }
+});
+
 test('waiting room departure still frees the seat', () => {
   const room = new GameRoom('waiting-test', 'p0');
   room.addPlayer('p0', 'P0', 2, null);

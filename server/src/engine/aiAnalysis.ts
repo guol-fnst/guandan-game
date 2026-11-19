@@ -57,6 +57,7 @@ export interface SampleResult {
 }
 
 export interface DecisionAnalysis {
+  trickForecast?: Record<string, TrickForecast>;
   teamPlan?: TeamPlan;
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
@@ -64,6 +65,91 @@ export interface DecisionAnalysis {
   candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; replyFinishRisk?: { samples: number; rate: number }; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
+}
+
+/** Position after each other active seat has had at most one response. The
+ * current leader may still be beaten after this horizon. Not a win probability. */
+export interface TrickForecast {
+  samples: number;
+  teamAhead: number;
+  partnerAhead: number;
+  allyExit: number;
+  enemyExit: number;
+}
+
+export function forecastTrick(hand: Card[], candidates: CardPattern[], last: CardPattern | null,
+  level: number, context: AiDecisionContext, generate: GenerateReplies, deadline: number,
+  random: () => number = Math.random): Record<string, TrickForecast> | undefined {
+  const knowledge = buildPublicKnowledge(hand, context);
+  if (!knowledge || (last && !context.players.some(p => p.seatIndex === context.lastPlayPlayerIndex))) return;
+  const self = context.selfSeatIndex;
+  // Opponents respond to a declaration, independent of which physical
+  // realization we use. Residual structure stays specific to the actual cards.
+  const shape = (p: CardPattern | null) => p ? [p.type, p.rank, p.length].join(':') : 'PASS';
+  const options: Array<CardPattern | null> = last ? [...candidates, null] : candidates;
+  const roots = [...new Map(options.map(p => [shape(p), p])).values()];
+  const totals = roots.map(() => ({ samples: 0, teamAhead: 0, partnerAhead: 0, allyExit: 0, enemyExit: 0 }));
+  for (let sample = 0; sample < 8 && performance.now() < deadline; sample++) {
+    const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, random, 2);
+    if (!deal) break;
+    // Build each seat's responses once per deal, using only that seat's hand.
+    const replies = deal.map((cards, seat) => {
+      if (!cards.length || seat === self) return [];
+      const counts = rankCounts(cards);
+      const options = generate(cards, level).map(play => {
+        const heldBomb = play.cards.some(c => (counts.get(c.rank) || 0) >= 4);
+        const price = (isBombPattern(play) ? 1000 + play.length * 10 : heldBomb ? 300 : 0)
+          + play.cards.filter(c => c.rank === level || c.rank >= Rank.SmallJoker).length * 100
+          + effectiveRank(play.rank, level);
+        return { play, price };
+      });
+      return options.sort((a, b) => a.price - b.price).map(o => o.play);
+    });
+    for (const [index, root] of roots.entries()) {
+      const n = deal.map(cards => cards.length);
+      let leader = root ? self : context.lastPlayPlayerIndex;
+      let trick = root || last;
+      let passes = root ? 0 : (context.passCount || 0) + 1;
+      const total = totals[index];
+      if (root) n[self] -= root.cards.length;
+      let exit = root && !n[self] ? self : -1;
+      for (let step = 1; step < 4 && exit < 0; step++) {
+        if (passes >= n.filter((count, s) => count > 0 && s !== leader).length) break;
+        const seat = (self + step) % 4;
+        if (!n[seat]) continue;
+        const beats = (p: CardPattern) => canBeat(p, trick, level);
+        const finish = replies[seat].find(p => p.cards.length === n[seat] && beats(p));
+        const contest = leader % 2 !== seat % 2;
+        const response = finish || (contest && replies[seat].find(p => beats(p)
+          && (!isBombPattern(p) || n[leader] <= 5)));
+        if (!response) { passes++; continue; }
+        n[seat] -= response.cards.length;
+        leader = seat; trick = response; passes = 0;
+        if (!n[seat]) exit = seat;
+      }
+      if (exit >= 0) {
+        if (exit % 2 === self % 2) total.allyExit++; else total.enemyExit++;
+      } else if (!n[leader]) {
+        // The original finishing player led the trick; award a closed pass
+        // sequence to the actual catch-wind seat.
+        const partner = (leader + 2) % 4;
+        for (let i = 0; i < 4; i++) {
+          const s = (partner + i) % 4;
+          if (n[s]) { leader = s; break; }
+        }
+      }
+      total.teamAhead += Number(leader % 2 === self % 2);
+      total.partnerAhead += Number(leader === context.partnerSeatIndex);
+      total.samples++;
+    }
+  }
+  if (!totals.length || totals[0].samples < 4) return;
+  const byShape = new Map(roots.map((p, i) => {
+    const t = totals[i], n = t.samples;
+    return [shape(p), { samples: n, teamAhead: t.teamAhead / n,
+      partnerAhead: t.partnerAhead / n, allyExit: t.allyExit / n, enemyExit: t.enemyExit / n }];
+  }));
+  return Object.fromEntries(options.map(p => [p ? analysisKey(p) : 'PASS', byShape.get(shape(p))!]));
 }
 
 export interface EndgameRoute {
@@ -835,7 +921,10 @@ export async function analyzeDecision(
     candidates.find(play => analysisKey(play) === route.actionKey));
   for (const play of [candidates[0], ...teamActions, ...routeLeads, ...controls, feed, ...structurallyOrdered]) {
     if (!play) continue;
-    const shape = `${play.type}:${play.rank}`;
+    const evidence = analysis.candidates[analysisKey(play)];
+    const shape = [play.type, play.rank, evidence?.remainingTurns.turns,
+      evidence?.continuation?.tailControlCost, evidence?.replyFinishRisk?.rate,
+      evidence?.endgameRoute?.intent].join(':');
     if (!shapes.has(shape)) { roots.push(play); shapes.add(shape); }
     if (!analysis.candidates[analysisKey(play)]) {
       analysis.candidates[analysisKey(play)] = { remainingTurns: estimator.after(play) };
