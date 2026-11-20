@@ -1534,6 +1534,44 @@ test('one-cycle arbitration distinguishes a costly trick from a finish or interc
   assert.equal(improvesTrickRoute({ ...pass, samples: 4 }, { ...joker, samples: 4, allyExit: 1 }, before, after, 0, 6), false);
 });
 
+test('a partition witness preserves physical cards even when the search budget expires', () => {
+  const hand = rankedHand([3, 3, 3, 4, 4, 8, 9, 10, 11, 12, 15]);
+  const plays = generateLegalPlays(hand, 2);
+  const joker = plays.find(p => p.type === PatternType.Single && p.rank === Rank.SmallJoker)!;
+  for (const deadline of [0, Infinity]) {
+    const estimator = createTurnEstimator(hand, plays, deadline);
+    const partition = estimator.partitionAfter(joker);
+    assert.equal(partition.length, estimator.after(joker).turns);
+    assert.deepEqual(partition.flatMap(p => p.cards.map(c => c.id)).sort((a,b) => a-b),
+      hand.filter(c => c.id !== joker.cards[0].id).map(c => c.id).sort((a,b) => a-b));
+  }
+});
+
+test('reviewed opening can reorder a low group before the joker and triple aces outside the shortlist', async () => {
+  const deck = createDeck();
+  const initial = [52,66,25,38,57,96,17,43,5,85,73,32,11,65,78,24,67,86,87,62,63,10,8,101,0,13,81].map(id => deck[id]);
+  for (const spentJoker of [false, true]) {
+    const hand = initial.filter(c => !spentJoker || c.rank !== Rank.SmallJoker);
+    const plays = generateLegalPlays(hand, Rank.Two);
+    const proposed = spentJoker
+      ? plays.find(p => p.type === PatternType.TriplePair && p.rank === Rank.Ace && p.cards.filter(c => c.rank === 5).length === 2)!
+      : plays.find(p => p.type === PatternType.Single && p.rank === Rank.SmallJoker)!;
+    const ctx = contextFor([hand, [], [], []]);
+    ctx.actionHistory = []; ctx.recentActions = [];
+    ctx.players.forEach(p => { p.cardCount = p.relation === 'self' ? hand.length : 27; });
+    const analysis = await analyzeDecision(hand, plays, [proposed], null, Rank.Two, undefined, findBestPlay);
+    const originalTurns = analysis.candidates[analysisKey(proposed)].remainingTurns.turns;
+    const result = finalizeAiDecision(proposed, [proposed], hand, null, true, Rank.Two, ctx, analysis,
+      proposed, undefined, plays)!;
+    assert.ok(result.cards.every(c => c.rank < Rank.Ace && c.rank !== Rank.Two));
+    assert.ok(result.cards.every(c => !proposed.cards.some(x => x.id === c.id)));
+    assert.ok(analysis.candidates[analysisKey(result)].remainingTurns.turns <= originalTurns);
+    ctx.players[1].cardCount = 1;
+    assert.equal(finalizeAiDecision(proposed, [proposed], hand, null, true, Rank.Two, ctx, analysis,
+      proposed, undefined, plays), proposed, 'opening conservation yields to reported defence');
+  }
+});
+
 test('equal-turn team leads send a partner out but respect an intervening finisher', async () => {
   const deck = createDeck();
   const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);

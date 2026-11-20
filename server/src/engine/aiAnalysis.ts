@@ -129,7 +129,7 @@ export interface DecisionAnalysis {
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
   handTurns: TurnEstimate;
-  candidates: Record<string, { remainingTurns: TurnEstimate; simulation?: SampleResult; endgameRoute?: EndgameRoute; replyFinishRisk?: { samples: number; rate: number }; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
+  candidates: Record<string, { remainingTurns: TurnEstimate; partition?: CardPattern[]; simulation?: SampleResult; endgameRoute?: EndgameRoute; replyFinishRisk?: { samples: number; rate: number }; continuation?: { extraTurns: number; exact: boolean; largestRemainingGroup: number; tailControlCost?: number } }>;
   passSimulation?: SampleResult;
   simulation: { status: string; samples: number; elapsedMs: number };
 }
@@ -798,40 +798,60 @@ export function createTurnEstimator(hand: Card[], plays: CardPattern[], deadline
     .filter(mask => mask !== 0).sort((a, b) => bitCount(b) - bitCount(a));
   const byBit = hand.map((_, i) => masks.filter(mask => (mask & (1 << i)) !== 0));
   const maxLength = masks.length ? bitCount(masks[0]) : 1;
-  const memo = new Map<number, TurnEstimate>([[0, { turns: 0, exact: true }]]);
+  type Partition = TurnEstimate & { groups: number[] };
+  const memo = new Map<number, Partition>([[0, { turns: 0, exact: true, groups: [] }]]);
+  let patternsByMask: Map<number, CardPattern> | undefined;
   let nodes = 0;
   const greedy = (mask: number) => {
-    let turns = 0;
+    const groups: number[] = [];
     for (const group of masks) {
-      if ((mask & group) === group) { mask ^= group; turns++; }
+      if ((mask & group) === group) { mask ^= group; groups.push(group); }
       if (!mask) break;
     }
-    return turns;
+    return groups;
   };
-  const solve = (mask: number): TurnEstimate => {
+  const solve = (mask: number): Partition => {
     const cached = memo.get(mask);
     if (cached) return cached;
-    let best = greedy(mask);
+    let groups = greedy(mask);
+    let best = groups.length;
     const lower = Math.ceil(bitCount(mask) / maxLength);
-    if (best === lower) return { turns: best, exact: true };
-    if (performance.now() >= deadline || ++nodes > 20000) return { turns: best, exact: false };
+    if (best === lower || performance.now() >= deadline || ++nodes > 20000) {
+      const result = { turns: best, exact: best === lower, groups };
+      memo.set(mask, result);
+      return result;
+    }
     const first = 31 - Math.clz32(mask & -mask);
     let exact = true;
     for (const group of byBit[first]) {
       if ((mask & group) !== group) continue;
       if (performance.now() >= deadline) { exact = false; break; }
       const rest = solve(mask ^ group);
-      best = Math.min(best, 1 + rest.turns);
+      if (1 + rest.turns < best) {
+        best = 1 + rest.turns;
+        groups = [group, ...rest.groups];
+      }
       exact = exact && rest.exact;
       if (best === lower) { exact = true; break; }
     }
-    const result = { turns: best, exact };
-    if (exact) memo.set(mask, result);
+    const result = { turns: best, exact, groups };
+    memo.set(mask, result);
     return result;
   };
   return {
-    whole: () => solve(fullMask),
-    after: (play: CardPattern) => solve(fullMask ^ maskOf(play.cards)),
+    whole: (): TurnEstimate => { const { turns, exact } = solve(fullMask); return { turns, exact }; },
+    after: (play: CardPattern): TurnEstimate => {
+      const { turns, exact } = solve(fullMask ^ maskOf(play.cards));
+      return { turns, exact };
+    },
+    partitionAfter: (play: CardPattern): CardPattern[] => {
+      if (!patternsByMask) {
+        patternsByMask = new Map(plays.map(p => [maskOf(p.cards), p]));
+        for (const [i, card] of hand.entries()) patternsByMask.set(1 << i,
+          { type: PatternType.Single, rank: card.rank, length: 1, cards: [card] });
+      }
+      return solve(fullMask ^ maskOf(play.cards)).groups.map(group => patternsByMask!.get(group)!);
+    },
   };
 }
 
@@ -1075,6 +1095,7 @@ export async function analyzeDecision(
     const remainingTurns = estimator.after(play);
     const used = new Set(play.cards.map(card => card.id));
     analysis.candidates[analysisKey(play)] = { remainingTurns, endgameRoute,
+      partition: last ? undefined : estimator.partitionAfter(play),
       continuation: { extraTurns: 1 + remainingTurns.turns - analysis.handTurns.turns,
         exact: remainingTurns.exact && analysis.handTurns.exact,
         tailControlCost: tailControlCost(hand, play, allPlays, level),

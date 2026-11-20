@@ -1067,18 +1067,37 @@ export function enforceTeamStrategy(
         && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined
         && analysis.candidates[analysisKey(play)].remainingTurns.turns <= proposedAfter.turns);
       let replacement = orderCandidates(alternatives, hand, level, true, context, analysis)[0];
-      // The shortlist bounds the model prompt. A calm lead can still preserve
-      // a bomb if a legal ordinary route was omitted by compression or capping.
-      if (!replacement && calmBombLead && fullLeadOptions && analysis?.simulation.samples === 0) {
+      // Reorder an actual partition when shortlist estimates miss a cheap lead.
+      // If the remainder takes N groups, leading one of those groups leaves
+      // the original control plus N-1 groups: the same N residual turns.
+      if (!replacement && fullLeadOptions && analysis?.simulation.samples === 0) {
         const deadline = performance.now() + 30;
         const estimator = createTurnEstimator(hand, fullLeadOptions, deadline);
-        const ordinary = fullLeadOptions.filter(play => !isBombPattern(play))
-          .sort((a, b) => b.cards.length - a.cards.length);
-        for (const play of ordinary) {
-          if (performance.now() >= deadline) break;
-          if (conservesControl(play) && estimator.after(play).turns <= proposedAfter.turns) {
-            replacement = play;
-            break;
+        const partition = analysis.candidates[analysisKey(proposed)]?.partition ?? estimator.partitionAfter(proposed);
+        if (partition.length <= proposedAfter.turns) {
+          replacement = orderCandidates(partition.filter(conservesControl), hand, level, true, context,
+            analysis, fullLeadOptions)[0];
+          if (replacement) {
+            const key = analysisKey(replacement);
+            const entry = analysis.candidates[key];
+            if (!entry || entry.remainingTurns.turns > partition.length) {
+              const remainingTurns = { turns: partition.length, exact: false };
+              analysis.candidates[key] = { ...entry, remainingTurns,
+                partition: [proposed, ...partition.filter(p => p !== replacement)],
+                continuation: entry?.continuation && { ...entry.continuation,
+                  extraTurns: 1 + partition.length - analysis.handTurns.turns, exact: false } };
+            }
+          }
+        }
+        if (!replacement && calmBombLead) {
+          const ordinary = fullLeadOptions.filter(play => !isBombPattern(play))
+            .sort((a, b) => b.cards.length - a.cards.length);
+          for (const play of ordinary) {
+            if (performance.now() >= deadline) break;
+            if (conservesControl(play) && estimator.after(play).turns <= proposedAfter.turns) {
+              replacement = play;
+              break;
+            }
           }
         }
       }
