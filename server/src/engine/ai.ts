@@ -7,6 +7,7 @@ import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL, HW_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
 import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickGain, decisionTempo, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
+import { improvesTrickRoute } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 export { enforceReportedNextPlayerMaximum, passPosition } from './aiAnalysis';
@@ -1576,8 +1577,9 @@ export async function findSmartPlay(
     return 3 * (f.allyExit - f.enemyExit) + f.teamAhead
       + (partner && partner.cardCount > 0 && partner.cardCount <= 5 ? 0.5 * f.partnerAhead : 0);
   };
+  const remainingTurns = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
   const value = (p: CardPattern | null) => {
-    const turns = p ? analysis.candidates[key(p)]?.remainingTurns.turns : analysis.handTurns.turns;
+    const turns = remainingTurns(p)?.turns;
     if (turns === undefined) return -Infinity;
     return teamProspect(p) - 0.6 * turns - (p ? 0.1 * controlResourceCost(p, hand, currentLevel) : 0);
   };
@@ -1585,14 +1587,9 @@ export async function findSmartPlay(
   // Changing only the predicted trick leader is insufficient evidence to
   // dismantle a better partition or spend another control resource.
   const improvesRoute = (before: CardPattern | null, after: CardPattern | null) => {
-    const a = analysis.trickForecast?.[key(before)], b = analysis.trickForecast?.[key(after)];
-    if (!a || !b) return false;
-    if (b.allyExit - a.allyExit + a.enemyExit - b.enemyExit >= 0.5) return true;
-    const remaining = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
-    const left = remaining(before), right = remaining(after);
     const cost = (p: CardPattern | null) => p ? controlResourceCost(p, hand, currentLevel) : 0;
-    return !!left?.exact && !!right?.exact && right.turns <= left.turns && cost(after) <= cost(before)
-      && b.teamAhead === 1 && a.teamAhead <= 0.25 && b.enemyExit <= a.enemyExit;
+    return improvesTrickRoute(analysis.trickForecast?.[key(before)], analysis.trickForecast?.[key(after)],
+      remainingTurns(before), remainingTurns(after), cost(before), cost(after));
   };
   const pool: Array<CardPattern | null> = isFreePlay ? [...legalPlays] : [...legalPlays, null];
   const challenger = analysis.trickForecast && pool.sort((a,b) => value(b) - value(a))[0];
@@ -1713,7 +1710,11 @@ export async function findSmartPlay(
       && publicControlEvidence(modelPlay, hand, currentLevel, context)?.unbeatable !== true) return 'continuation';
     const localValue = value(local), modelValue = value(modelPlay);
     if (Number.isFinite(localValue) && Number.isFinite(modelValue)) {
-      return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay) ? 'team_baseline' : undefined;
+      // An expired partition search gives upper bounds, not comparable route
+      // lengths. Apply the same evidence threshold used by decide to a PASS.
+      if (!remainingTurns(local)?.exact || !remainingTurns(modelPlay)?.exact) return;
+      return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay)
+        && (modelPlay !== null || improvesRoute(modelPlay, local)) ? 'team_baseline' : undefined;
     }
     // Without shared tactical evidence, only count an exact partition loss;
     // never equate missing simulation data with a zero win rate.

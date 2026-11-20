@@ -8,7 +8,7 @@ import type { DecisionAnalysis } from './aiAnalysis';
 import {
   analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain, twoTrickGain,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
-  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
+  behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost, improvesTrickRoute,
 } from './aiAnalysis';
 import { llmFindBestPlay, parseDecisionCheck, parseStrategyPlan } from './llmAi';
 import type { AiDecisionContext, AiRecentAction } from './llmAi';
@@ -1518,6 +1518,20 @@ test('two-trick evidence compares identical deals through the next free lead', a
   assert.equal(twoTrickExitGain(before, { ...before, retainedLead: 1 }), 0);
   assert.equal(twoTrickExitGain(before, { ...after, samples: 3 }), 0);
   assert.equal(await forecastTwoTricks(hand, [single, pair], null, Rank.Two, ctx, choose, 0), undefined);
+});
+
+test('one-cycle arbitration distinguishes a costly trick from a finish or interception', () => {
+  const pass = { samples: 8, teamAhead: 0, partnerAhead: 0, allyExit: 0, enemyExit: 0 };
+  const joker = { ...pass, teamAhead: 1 };
+  const before = { turns: 8, exact: true }, after = { turns: 7, exact: true };
+  assert.equal(improvesTrickRoute(pass, joker, before, after, 0, 6), false);
+  assert.equal(improvesTrickRoute(pass, joker, before, after, 0, 0), true);
+  assert.equal(improvesTrickRoute(pass, joker, { ...before, exact: false }, after, 0, 0), false);
+  assert.equal(improvesTrickRoute(pass, joker, before, { ...after, exact: false }, 0, 0), false);
+  assert.equal(improvesTrickRoute({ ...pass, enemyExit: 0.75 }, joker, before, after, 0, 6), true);
+  assert.equal(improvesTrickRoute(pass, { ...joker, allyExit: 0.75 }, before, after, 0, 6), true);
+  assert.equal(improvesTrickRoute(pass, { ...joker, allyExit: 0.75, enemyExit: 0.25 }, before, after, 0, 6), false);
+  assert.equal(improvesTrickRoute({ ...pass, samples: 4 }, { ...joker, samples: 4, allyExit: 1 }, before, after, 0, 6), false);
 });
 
 test('equal-turn team leads send a partner out but respect an intervening finisher', async () => {

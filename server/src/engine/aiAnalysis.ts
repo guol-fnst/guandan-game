@@ -145,6 +145,20 @@ export interface TrickForecast {
   enemyExit: number;
 }
 
+/** Compare matched one-cycle evidence. Taking the lead alone cannot pay for
+ * consuming control; an immediate exit/denial can justify that expense. */
+export function improvesTrickRoute(
+  before: TrickForecast | undefined, after: TrickForecast | undefined,
+  beforeTurns: TurnEstimate | undefined, afterTurns: TurnEstimate | undefined,
+  beforeCost: number, afterCost: number,
+): boolean {
+  if (!before || !after || before.samples !== after.samples || before.samples < 8
+    || after.allyExit < before.allyExit || after.enemyExit > before.enemyExit) return false;
+  if (after.allyExit - before.allyExit + before.enemyExit - after.enemyExit >= 0.5) return true;
+  return !!beforeTurns?.exact && !!afterTurns?.exact && afterTurns.turns <= beforeTurns.turns
+    && afterCost <= beforeCost && after.teamAhead === 1 && before.teamAhead <= 0.25;
+}
+
 export function forecastTrick(hand: Card[], candidates: CardPattern[], last: CardPattern | null,
   level: number, context: AiDecisionContext, generate: GenerateReplies, deadline: number,
   random: () => number = Math.random, enumerateOnly = false): Record<string, TrickForecast> | undefined {
