@@ -336,6 +336,34 @@ test('forecast allows the intervening opponent to block a one-card partner', () 
   assert.equal(forecast[analysisKey(lead)].allyExit, 0, 'the opponent can cover the feed with the ace');
 });
 
+test('the model may defer to a partner only while the partner can still answer', async t => {
+  const deck = createDeck();
+  const take = (rank: Rank, n: number) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(4, 4), ...take(7, 3), ...take(9, 2), ...take(13, 1)];
+  const last: CardPattern = { type: PatternType.Triple, rank: Rank.Ace, cards: take(14, 3), length: 3 };
+  const oldKey = process.env.LOCAL_LLM_API_KEY;
+  process.env.LOCAL_LLM_API_KEY = 'fixture';
+  t.after(() => {
+    if (oldKey === undefined) delete process.env.LOCAL_LLM_API_KEY;
+    else process.env.LOCAL_LLM_API_KEY = oldKey;
+  });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ choices: [{ message: {
+    content: JSON.stringify({ action_id: 'PASS', decision_check: { goal: 'hold_control',
+      resource_use: 'preserve', worst_reply: '对手续领', why_not_lower_cost: '保留炸弹' } }),
+  } }] }));
+  for (const seat of [1, 3]) {
+    const partner = (seat + 2) % 4;
+    const ctx: AiDecisionContext = { selfSeatIndex: seat, partnerSeatIndex: partner, lastPlayPlayerIndex: 0,
+      teamLevels: [2, 2], roundNumber: 1, leadingTeam: 0, passCount: seat - 1,
+      recentActions: [{ action: 'play', seatIndex: 0, pattern: last }],
+      players: [0, 1, 2, 3].map(i => ({ seatIndex: i, cardCount: i === 0 ? 5 : i === seat ? hand.length : 14,
+        finishRank: null, relation: i === seat ? 'self' : i === partner ? 'partner' : 'opponent' })) };
+    for (let i = 1; i < seat; i++) ctx.recentActions.push({ seatIndex: i, action: 'pass' });
+    const action = await findSmartPlay(hand, last, false, 2, ctx, { provider: 'local', model: 'Qwen3.8-27' });
+    assert.equal(action?.type, seat === 3 ? PatternType.Bomb4 : undefined);
+  }
+});
+
 test('endgame uses balanced complete samples and labels exhausted/incomplete runs', async () => {
   const deck = createDeck();
   const hands = [[deck[0], deck[1]], [deck[2], deck[3]], [deck[4], deck[5]], [deck[6], deck[7]]];
