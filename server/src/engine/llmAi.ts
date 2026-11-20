@@ -257,29 +257,35 @@ function spendsControlResource(option: CardPattern, hand: Card[], currentLevel: 
   const held = new Map<number, number>();
   for (const card of hand) held.set(card.rank, (held.get(card.rank) || 0) + 1);
   const cost = describeActionCost(option, hand, currentLevel, held);
+  return requiresSpendCheck(cost);
+}
+
+function requiresSpendCheck(cost: ReturnType<typeof describeActionCost>): boolean {
   return cost.uses_wildcards > 0 || cost.uses_jokers > 0 || cost.uses_aces > 0
     || cost.natural_level_cards_spent > 0 || cost.breaks_bomb || cost.weakened_natural_bombs.length > 0 || cost.uses_bomb;
 }
 
 function compactActionGroups(
   options: CardPattern[], equivalentCounts: number[], hand: Card[], currentLevel: number,
-  includeAnalysis = false, analysis?: DecisionAnalysis,
+  analysis?: DecisionAnalysis,
 ) {
   const held = new Map<number, number>();
   for (const card of hand) held.set(card.rank, (held.get(card.rank) || 0) + 1);
-  return options.map((option, actionId) => ({
-    action_id: actionId,
-    type: option.type, type_name: PATTERN_NAMES[option.type],
-    declared_rank: option.rank, length: option.length,
-    cards: option.cards.map(card => ({ id: card.id, card: cardDisplayName(card) })),
-    substitutions: option.substitutions?.map(card => ({
-      physical_id: card.id, replaces: cardDisplayName(card),
-    })),
-    equivalent_variants: equivalentCounts[actionId] || 1,
-    cost: describeActionCost(option, hand, currentLevel, held),
-    next_cycle: includeAnalysis ? analysis?.trickForecast?.[analysisKey(option)] : undefined,
-    analysis: includeAnalysis ? analysis?.candidates[analysisKey(option)] : undefined,
-  }));
+  return options.map((option, actionId) => {
+    const key = analysisKey(option);
+    const cost = describeActionCost(option, hand, currentLevel, held);
+    return {
+      action_id: actionId, type: option.type, declared_rank: option.rank,
+      cards: option.cards.map(card => ({ id: card.id, card: cardDisplayName(card) })),
+      substitutions: option.substitutions?.map(card => ({ physical_id: card.id, replaces: cardDisplayName(card) })),
+      equivalent_variants: equivalentCounts[actionId] || 1,
+      required_resource_use: requiresSpendCheck(cost) ? 'spend_justified' : undefined,
+      cost: Object.fromEntries(Object.entries(cost).filter(([, value]) =>
+        Array.isArray(value) ? value.length > 0 : Boolean(value))),
+      next_cycle: analysis?.trickForecast?.[key],
+      analysis: analysis?.candidates[key],
+    };
+  });
 }
 
 function parseModelResponse(content: string): any {
@@ -335,26 +341,13 @@ export async function llmFindBestPlay(
   if (legalPlays.length === 0) return isFreePlay ? undefined : null;
 
   const lastPlayer = context?.players.find(p => p.seatIndex === context.lastPlayPlayerIndex);
-  const endgame = context?.players.some(p => p.finishRank !== null || p.cardCount <= 5);
   const scenario = isFreePlay ? '自由领牌' : lastPlayer?.relation === 'partner' ? '跟队友牌' : '跟对手牌';
-  const task = isFreePlay
-    ? '比较先走整组、保留控制回手、送队友与收尾。平静开局不为减少手数消耗配牌；等牌力先检查自然牌替代。'
-    : lastPlayer?.relation === 'partner'
-      ? '优先让队友走。仅在直接走完、明确阻断对手或接管后有可执行团队收益时压队友。'
-      : '比较接管与PASS的整手收益。先查完整普通接牌，不要把不拆组的级牌对误称拆炸。结合对手持续推进、可能下一手结束与接风风险，比较完整炸弹改变牌型的收益，不必机械等到报单。保牌必须有具体收益或后续接管条件，不能仅因存在模拟结果就认定PASS更好。';
-  const systemPrompt = `你是四人两队掼蛋选手，对家是队友。程序负责合法性、牌型和记牌，你选择战略。
-规则：红桃级牌是逢人配；单张大王>小王>级牌>A>K…；顺子用声明点数比较，A2345最低。实体牌、替代关系与声明点数由输入确定，不自行改牌。
-信息边界：只用自己的手牌和公开信息，不知道其他人的底牌；过牌不代表不能接，两张不保证是对子。hand_combinations只是有上限的代表组合，并非全部结构。
-当前任务：${scenario}。${task}
-${endgame ? '残局重点：先比较控制→收尾、试探→回手→收尾及阻止接风。检查被压后的回手机会，不能把静态两手当成连续两手必走。' : '中前盘重点：整理整手结构与回手机会，比较消耗炸弹/配牌/王的真实收益。'}
-统一实战决策指南：
+  const systemPrompt = `你是四人两队掼蛋选手，只用自己手牌和公开信息。红桃级牌是逢人配；单张大王>小王>级牌>A；顺子按声明点数，A2345最低。
 ${STRATEGY_GUIDE}
-证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
-strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写。按所选动作的cost核对资源；消耗A、王、自然级牌、逢人配、拆炸或uses_bomb为true时，resource_use必须为spend_justified。
-下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
-after_pass.responders是过牌后仍能应牌的座位；partnerMayRespond=false时不能指望队友接，nextLead是无人再压时的领牌人。对手已拿头游时要比较放其队友续领造成双上的代价。核对 remaining_rank_bombs 才能声称留炸。拆炸跟牌要与 PASS 和完整接牌比较具体收益。remainingTurns 是该动作之后的余牌手数，exact=false 是上界；残局比较先出整组和保留整组、用同型控制回手的顺序。
-next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他座位各应一次后本方占先比例，partnerAhead是队友占先比例，allyExit、enemyExit是这一圈先有人走完的比例。这是短程估计，结合余牌手数与保留控制比较。
-从legal_actions返回action_id（跟牌可PASS），decision_check执行固定自检，strategy_plan写本次执行后的下一步及失效条件。不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
+当前局面：${scenario}。after_pass 给出剩余应牌座位及无人再接时的领牌人；对家无法再接时须自己比较拦截。下家报单/双时比较最大普通应牌和完整炸弹。
+每个 legal_actions 行给出实体牌、替代、资源成本和可用分析；cost 省略的项为零、否或空，分析缺项表示未知。声称留炸须核对 remaining_rank_bombs。decision_check.resource_use 须符合所选行的 required_resource_use；PASS 只能 preserve 或 none。
+remainingTurns 是余牌静态手数，exact=false 是上界。next_cycle 与 pass_next_cycle 是同批底牌一圈后本队/队友占先和双方先走比例；replyFinishRisk 是对手有一手接完的抽样比例。只把 controlProven 当公开控牌证明。
+team_routes 按 action_id 关联候选，PASS 的预测见 local_analysis。hand_combinations 是可供以后领出的代表组合；同一实体组合直接引用 action_id。根据当前公开事实重验 strategy_memory。`;
 
   const lastPlayerSnapshot = context?.players.find(player =>
     player.seatIndex === context.lastPlayPlayerIndex
@@ -367,8 +360,7 @@ next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他�
   const stage = tempo.stage;
   const knowledge = context ? buildPublicKnowledge(hand, context) : null;
   const representedCounts = legalPlays.map((_, index) => equivalentCounts[index] || 1);
-  const representedHandCombinationCounts = handCombinations
-    .map((_, index) => handCombinationEquivalentCounts[index] || 1);
+  const actionIds = new Map(legalPlays.map((play, index) => [analysisKey(play), index]));
   const input = {
     strategy_framework: strategyBrief(hand, currentLevel, context),
     strategy_memory: context?.strategyMemory,
@@ -385,15 +377,9 @@ next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他�
     tempo,
     team_plan: analysis?.teamPlan ?? buildTeamPlan(hand, handCombinations, context),
     team_routes: analysis?.teamRoutes?.flatMap(({ actionKey, simulation: _simulation, ...route }) => {
-      const index = actionKey === null ? -1 : legalPlays.findIndex(play => analysisKey(play) === actionKey);
-      if ((actionKey !== null && index < 0) || (actionKey === null && isFreePlay)) return [];
-      // Share the exact candidate evidence used locally; do not invent a
-      // second route score or label rollout estimates as proven wins.
-      const evidence = actionKey === null ? undefined : analysis.candidates[actionKey];
-      return [{ ...route, action_id: actionKey === null ? 'PASS' : index,
-        remaining_turns: evidence?.remainingTurns,
-        continuation: evidence?.continuation,
-        simulation: actionKey === null ? analysis.passSimulation : evidence?.simulation }];
+      const actionId = actionKey === null ? 'PASS' : actionIds.get(actionKey);
+      if (actionId === undefined || (actionId === 'PASS' && isFreePlay)) return [];
+      return [{ ...route, action_id: actionId }];
     }),
     turn_mode: isFreePlay ? '自由出牌，必须选择动作' : '跟牌，可选择合法动作或PASS',
     hand: describeHand(hand, currentLevel),
@@ -468,12 +454,16 @@ next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他�
     },
     hand_combinations: isFreePlay ? {
       same_as_legal_actions: true,
-    } : compactActionGroups(
-      handCombinations, representedHandCombinationCounts, hand, currentLevel,
-    ),
-    legal_actions: compactActionGroups(
-      legalPlays, representedCounts, hand, currentLevel, true, analysis,
-    ),
+    } : handCombinations.map((play, index) => {
+      const actionId = actionIds.get(analysisKey(play));
+      const variants = handCombinationEquivalentCounts[index] || 1;
+      if (actionId !== undefined) return { action_id: actionId, equivalent_variants: variants };
+      return { type: PATTERN_NAMES[play.type], declared_rank: play.rank,
+        cards: play.cards.map(card => `${card.id}=${cardDisplayName(card)}`).join(' '),
+        substitutions: play.substitutions?.map(card => `${card.id}→${cardDisplayName(card)}`),
+        equivalent_variants: variants };
+    }),
+    legal_actions: compactActionGroups(legalPlays, representedCounts, hand, currentLevel, analysis),
   };
   const outputExample = '{"action_id":0,"decision_check":{"goal":"organize","resource_use":"preserve","worst_reply":"对手用更高同型接管","why_not_lower_cost":"该动作保住回手牌"},"brief_reason":"先走低组合","strategy_plan":{"next":"有牌权再领低对","reconsider_when":"对手报单"}}';
   const userPrompt = `请根据以下牌桌输入选择动作：\n${JSON.stringify(input)}\n

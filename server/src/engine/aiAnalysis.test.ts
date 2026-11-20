@@ -423,8 +423,8 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.ok(input.strategy_framework.mandatory_comparison.includes('lower_resource_action'));
     const route = input.team_routes.find((item: any) => item.goal === 'finish_self');
     assert.equal(route.action_id, 0);
-    assert.deepEqual(route.remaining_turns, analysis.candidates[analysisKey(plays[0])].remainingTurns);
-    assert.deepEqual(route.continuation, analysis.candidates[analysisKey(plays[0])].continuation);
+    assert.deepEqual(input.legal_actions[route.action_id].analysis.remainingTurns, analysis.candidates[analysisKey(plays[0])].remainingTurns);
+    assert.deepEqual(input.legal_actions[route.action_id].analysis.continuation, analysis.candidates[analysisKey(plays[0])].continuation);
     assert.ok(input.team_routes.every((item: any) => Number.isInteger(item.action_id) && item.action_id >= 0));
 
     assert.equal(input.legal_actions[0].analysis.remainingTurns.turns, 0);
@@ -432,8 +432,8 @@ test('LLM input contains complete public memory and local analysis, not sampled 
     assert.equal(input.candidate_coverage.represented_equivalent_actions, plays.length);
     assert.equal(input.hand_combinations.same_as_legal_actions, true);
     assert.equal(input.legal_actions[0].equivalent_variants, 1);
-    assert.equal(input.legal_actions[0].cost.uses_aces, 0);
-    assert.equal(input.legal_actions[0].cost.uses_bomb, false);
+    assert.equal(input.legal_actions[0].cost.uses_aces, undefined);
+    assert.equal(input.legal_actions[0].cost.uses_bomb, undefined);
     assert.equal(typeof input.public_inference.unseen_controls, 'string');
     assert.ok(input.public_memory.publicly_known_cards.every((p: any) => p.cards === ''));
     assert.equal(input.sampled_hands, undefined);
