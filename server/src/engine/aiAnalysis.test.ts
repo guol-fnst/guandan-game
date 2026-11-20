@@ -6,7 +6,7 @@ import { createDeck } from './card';
 import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates, removeWastefulWildRealizations, groundStrategyPlan, pruneOpeningWildLeads } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
 } from './aiAnalysis';
@@ -1493,4 +1493,29 @@ test('a same-strength unseen control makes a grouped-exit probe conditional', as
   assert.equal(route.controlProven, false);
   assert.equal(route.exit?.type, PatternType.TriplePair);
   assert.equal(finalizeAiDecision(house, all, hand, null, true, Rank.Two, ctx, analysis)?.rank, probe.rank);
+});
+
+test('two-trick evidence compares identical deals through the next free lead', async () => {
+  const deck = createDeck();
+  const hand = [deck.find(c => c.rank === 3)!, ...deck.filter(c => c.rank === 5).slice(0, 2)];
+  const others = deck.filter(c => c.rank === 9).slice(0, 6);
+  const ctx = contextFor([hand, others.slice(0, 2), others.slice(2, 4), others.slice(4)]);
+  const all = generateLegalPlays(hand, Rank.Two);
+  const single = all.find(p => p.type === PatternType.Single && p.rank === 3)!;
+  const pair = all.find(p => p.type === PatternType.Pair)!;
+  const choose: Parameters<typeof forecastTwoTricks>[5] = (cards, trick, free, level, seat) => {
+    if (free || (seat.selfSeatIndex === 1 && trick?.type === PatternType.Single && trick.rank === 3)) {
+      return generateLegalPlays(cards, level).find(p => p.type === PatternType.Single)!;
+    }
+    return null;
+  };
+  const forecast = await forecastTwoTricks(hand, [single, pair], null, Rank.Two, ctx, choose, Infinity);
+  assert.deepEqual(forecast?.[analysisKey(single)], { samples: 8, allyExit: 0, enemyExit: 1, retainedLead: 0 });
+  assert.deepEqual(forecast?.[analysisKey(pair)], { samples: 8, allyExit: 1, enemyExit: 0, retainedLead: 0 });
+  const before = forecast![analysisKey(single)], after = forecast![analysisKey(pair)];
+  assert.ok(twoTrickExitGain(before, after) > 0);
+  assert.equal(twoTrickExitGain(after, before), 0);
+  assert.equal(twoTrickExitGain(before, { ...before, retainedLead: 1 }), 0);
+  assert.equal(twoTrickExitGain(before, { ...after, samples: 3 }), 0);
+  assert.equal(await forecastTwoTricks(hand, [single, pair], null, Rank.Two, ctx, choose, 0), undefined);
 });

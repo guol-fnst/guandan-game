@@ -123,6 +123,7 @@ export interface SampleResult {
 
 export interface DecisionAnalysis {
   trickForecast?: Record<string, TrickForecast>;
+  twoTricks?: Record<string, TwoTrickForecast>;
   teamPlan?: TeamPlan;
   teamRoutes?: TeamRoute[];
   seatBeliefs?: SeatBelief[];
@@ -817,13 +818,33 @@ interface Outcome { reward: number; win: boolean; doubleWin: boolean }
 type GenerateReplies = (hand: Card[], level: number) => CardPattern[];
 interface ReplyBranch { mode: 'control' | 'hold'; generate: GenerateReplies }
 
-/** One sampled continuation. Each simulated policy sees only its own sampled
- * hand and public state, never the other sampled hands. */
-export function rollout(
+export interface TwoTrickForecast {
+  samples: number;
+  allyExit: number;
+  enemyExit: number;
+  /** Unconditional share: nobody finished and our team won the second trick. */
+  retainedLead: number;
+}
+
+// Prefer a route only on a large change in actual exits, with neither side
+// of the comparison getting worse. Holding the lead alone cannot justify it.
+export function twoTrickExitGain(before: TwoTrickForecast, after: TwoTrickForecast): number {
+  if (before.samples !== after.samples || before.samples < 6
+    || after.allyExit < before.allyExit || after.enemyExit > before.enemyExit) return 0;
+  const gain = after.allyExit - before.allyExit + before.enemyExit - after.enemyExit;
+  return gain >= 0.5 ? gain : 0;
+}
+
+/** Both horizons use the same passes, catch-wind and finishing order. Only
+ * complete games produce a rank reward; short continuations stop at an exit
+ * or the second closed trick (including the trick currently in progress). */
+function runContinuation<T>(
   initialHands: Card[][], root: CardPattern | null, last: CardPattern | null,
   level: number, context: AiDecisionContext, choose: ChoosePlay, deadline: number,
-  replyBranch?: ReplyBranch,
-): Outcome | null {
+  finish: (places: number[], nextLeader: number | null) => T,
+  short: boolean, replyBranch?: ReplyBranch,
+): T | null {
+  let closedTricks = 0;
   const hands = initialHands.map(cards => [...cards]);
   let branched = false;
   const finishes = context.players.filter(player => player.finishRank !== null)
@@ -886,12 +907,8 @@ export function rollout(
       hands[seat] = hands[seat].filter(card => !ids.has(card.id));
       trick = action; winner = seat; passes = 0;
       if (!hands[seat].length) finishes.push(seat);
-      if (finishes.length >= 3 || (finishes.length === 2 && finishes[0] % 2 === finishes[1] % 2)) {
-        const win = finishes[0] % 2 === context.selfSeatIndex % 2;
-        const partnerPlace = finishes.indexOf((finishes[0] + 2) % 4) + 1 || 4;
-        const magnitude = (partnerPlace === 2 ? 3 : partnerPlace === 3 ? 2 : 1) / 3;
-        return { reward: win ? magnitude : -magnitude, win, doubleWin: win && partnerPlace === 2 };
-      }
+      if ((short && !hands[seat].length) || finishes.length >= 3
+        || (finishes.length === 2 && finishes[0] % 2 === finishes[1] % 2)) return finish(finishes, null);
       seat = nextActive(seat);
     } else {
       if (!trick) return null;
@@ -902,11 +919,57 @@ export function rollout(
         const partner = (winner + 2) % 4;
         seat = finishes.includes(winner)
           ? finishes.includes(partner) ? nextActive(partner) : partner : winner;
+        if (short && ++closedTricks === 2) return finish(finishes, seat);
         trick = null; winner = -1; passes = 0;
       } else seat = nextActive(seat);
     }
   }
   return null;
+}
+
+export function rollout(
+  initialHands: Card[][], root: CardPattern | null, last: CardPattern | null,
+  level: number, context: AiDecisionContext, choose: ChoosePlay, deadline: number,
+  replyBranch?: ReplyBranch,
+): Outcome | null {
+  return runContinuation(initialHands, root, last, level, context, choose, deadline, finishes => {
+    const win = finishes[0] % 2 === context.selfSeatIndex % 2;
+    const partnerPlace = finishes.indexOf((finishes[0] + 2) % 4) + 1 || 4;
+    const magnitude = (partnerPlace === 2 ? 3 : partnerPlace === 3 ? 2 : 1) / 3;
+    return { reward: win ? magnitude : -magnitude, win, doubleWin: win && partnerPlace === 2 };
+  }, false, replyBranch);
+}
+
+export async function forecastTwoTricks(
+  hand: Card[], roots: (CardPattern | null)[], last: CardPattern | null, level: number,
+  context: AiDecisionContext, choose: ChoosePlay, deadline: number, random = Math.random,
+): Promise<Record<string, TwoTrickForecast> | undefined> {
+  if (roots.length < 2 || performance.now() >= deadline) return;
+  const knowledge = buildPublicKnowledge(hand, context);
+  if (!knowledge) return;
+  const totals = roots.map(() => ({ samples: 0, allyExit: 0, enemyExit: 0, retainedLead: 0 }));
+  const ownTeam = context.selfSeatIndex % 2;
+  for (let sample = 0; sample < 8; sample++) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (performance.now() >= deadline) break;
+    const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, random, 2);
+    if (!deal) break;
+    const outcomes = roots.map(root => runContinuation(deal, root, last, level, context, choose, deadline,
+      (places, leader) => leader === null
+        ? (places[places.length - 1] % 2 === ownTeam ? 'allyExit' : 'enemyExit')
+        : (leader % 2 === ownTeam ? 'retainedLead' : 'enemyLead'), true));
+    if (outcomes.some(outcome => outcome === null) || performance.now() > deadline) break;
+    outcomes.forEach((outcome, index) => {
+      totals[index].samples++;
+      if (outcome && outcome !== 'enemyLead') totals[index][outcome]++;
+    });
+  }
+  if (totals[0].samples < 6) return;
+  return Object.fromEntries(roots.map((root, i) => {
+    const t = totals[i];
+    return [root ? analysisKey(root) : 'PASS', { samples: t.samples, allyExit: t.allyExit / t.samples,
+      enemyExit: t.enemyExit / t.samples, retainedLead: t.retainedLead / t.samples }];
+  }));
 }
 
 export async function analyzeDecision(

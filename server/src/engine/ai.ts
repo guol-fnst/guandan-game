@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL, HW_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain, decisionTempo, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 export { enforceReportedNextPlayerMaximum, passPosition } from './aiAnalysis';
@@ -954,7 +954,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45, last_defender: 780,
+  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, two_tricks: 45, team_baseline: 45, last_defender: 780,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1376,6 +1376,7 @@ export interface AiDecisionTrace {
   corrected: boolean;
   corrections?: AiPolicyCorrection[];
   trickSamples?: number;
+  twoTrickSamples?: number;
   rankBombChanges?: ReturnType<typeof rankBombChanges>;
   remainingTurns?: DecisionAnalysis['handTurns'];
 }
@@ -1428,6 +1429,9 @@ export async function findSmartPlay(
     orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, undefined, allPlays),
     currentLevel, allPlays,
   );
+  // Evaluation switch: paired play has not yet established non-inferiority.
+  const testTwoTricks = process.env.GUANDAN_TWO_TRICK_FORECAST === '1';
+  const planningDeadline = testTwoTricks ? performance.now() + 800 : 0;
   const routeKeys = new Set(buildTeamRoutes(hand, allPlays, completeCompressed.plays,
     isFreePlay ? null : lastPattern, currentLevel, context, {}, generateLegalPlays)
     .flatMap(route => route.actionKey ? [route.actionKey] : []));
@@ -1479,6 +1483,7 @@ export async function findSmartPlay(
     .filter(route => route.actionKey === (play ? analysisKey(play) : null)).map(route => route.goal);
   const key = (p: CardPattern | null) => p ? analysisKey(p) : 'PASS';
   const executedEvidence = (play: CardPattern | null) => ({
+    twoTrickSamples: analysis.twoTricks?.[key(play)]?.samples,
     rankBombChanges: play ? rankBombChanges(hand, play) : undefined,
     remainingTurns: play ? analysis.candidates[key(play)]?.remainingTurns : analysis.handTurns,
   });
@@ -1527,9 +1532,69 @@ export async function findSmartPlay(
     corrections = notes;
     return accepted;
   };
-  const local = decide(fallbackResult);
+  const baseline = decide(fallbackResult);
+  const baselineNotes = corrections;
+  const roots: Array<CardPattern | null> = [baseline];
+  const tempo = testTwoTricks && context && largeDeal ? decisionTempo(context) : undefined;
+  const contestedControl = tempo && !isFreePlay && legalPlays.some(play => isBombPattern(play)
+    || rankBombChanges(hand, play).length > 0);
+  if (context && tempo && tempo.stage !== '开局' && ((tempo.minimumActiveCount ?? Infinity) <= 10 || contestedControl)
+    && !legalPlays.some(p => p.cards.length === hand.length)
+    && !analysis.candidates[key(baseline)]?.endgameRoute?.controlProven && performance.now() < planningDeadline) {
+    // Compare distinct, executable routes. Passing the partner is a candidate
+    // too. Never use a raw proposal which the existing defences would change.
+    const choices: Array<CardPattern | null> = isFreePlay ? [] : [null];
+    const teamRoute = analysis.teamRoutes?.find(r => r.actionKey && r.actionKey !== key(baseline)
+      && (r.goal === 'feed_partner' || r.goal === 'takeover_change'));
+    const teamPlay = legalPlays.find(play => key(play) === teamRoute?.actionKey);
+    if (teamPlay) choices.push(teamPlay);
+    choices.push(legalPlays[0]);
+    const lowCost = [...legalPlays].sort((a, b) =>
+      controlResourceCost(a, hand, currentLevel) - controlResourceCost(b, hand, currentLevel))[0];
+    choices.push(lowCost);
+    const changeShape = legalPlays.find(play => isBombPattern(play) !== isBombPattern(legalPlays[0]));
+    if (changeShape) choices.push(changeShape);
+    const otherLead = legalPlays.find(play => play.type !== legalPlays[0].type);
+    if (isFreePlay && otherLead) choices.push(otherLead);
+    const tried = new Set([key(baseline)]);
+    for (const choice of choices) {
+      if (tried.has(key(choice)) || performance.now() >= planningDeadline) continue;
+      tried.add(key(choice));
+      const guarded = finalize(choice);
+      if (!roots.some(root => key(root) === key(guarded))) roots.push(guarded);
+      if (roots.length === 3) break;
+    }
+    const forecast = await forecastTwoTricks(hand, roots, isFreePlay ? null : lastPattern,
+      currentLevel, context, findBestPlay, planningDeadline);
+    // Weak partial-horizon evidence should not steer the external model either.
+    const measured = Object.values(forecast || {});
+    if (measured.some(a => measured.some(b => twoTrickExitGain(a, b) > 0))) analysis.twoTricks = forecast;
+  }
+  corrections = baselineNotes;
+  const compareTwoTricks = (accepted: CardPattern | null) => {
+    const evidence = analysis.twoTricks;
+    const before = evidence?.[key(accepted)];
+    if (!before || !evidence || accepted?.cards.length === hand.length
+      || corrections.some(note => note.rule === 'last_defender' || note.rule === 'deny_double_win')
+      || analysis.candidates[key(accepted)]?.endgameRoute?.controlProven) return accepted;
+    let best = accepted;
+    let gain = 0;
+    for (const alternative of roots) {
+      const next = evidence[key(alternative)];
+      const improvement = twoTrickExitGain(before, next);
+      if (improvement > gain) {
+        best = alternative;
+        gain = improvement;
+      }
+    }
+    if (key(best) !== key(accepted)) corrections = [...corrections, { rule: 'two_tricks', priority: AI_POLICY_PRIORITY.two_tricks,
+      from: policyAction(accepted), to: policyAction(best) }];
+    return best;
+  };
+  const local = baseline;
+  const prepared = compareTwoTricks(local);
   const localNotes = corrections;
-  options.onLocalReady?.(local);
+  options.onLocalReady?.(prepared);
 
   // Compare the two actions that would actually be played, including PASS.
   // Full-game evidence takes precedence over a one-cycle estimate. When the
@@ -1598,6 +1663,7 @@ export async function findSmartPlay(
             from: policyAction(final), to: policyAction(local) }];
           final = local;
         }
+        final = compareTwoTricks(final);
         // Rebuild from the executed action even when a guard changed it or the
         // model omitted a plan. Model prose is never evidence of retained cards.
         const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
@@ -1610,7 +1676,7 @@ export async function findSmartPlay(
     } catch {}
   }
 
-  const final = local;
+  const final = prepared;
   corrections = localNotes;
   const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
   if (grounded) onPlan?.(grounded);
