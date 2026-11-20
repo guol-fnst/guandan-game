@@ -1519,3 +1519,24 @@ test('two-trick evidence compares identical deals through the next free lead', a
   assert.equal(twoTrickExitGain(before, { ...after, samples: 3 }), 0);
   assert.equal(await forecastTwoTricks(hand, [single, pair], null, Rank.Two, ctx, choose, 0), undefined);
 });
+
+test('equal-turn team leads send a partner out but respect an intervening finisher', async () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n = 1) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(4), ...take(7, 3), ...take(12)];
+  const leads = generateLegalPlays(hand, 3);
+  const triple = leads.find(p => p.type === PatternType.Triple)!;
+  const low = leads.find(p => p.rank === 4)!;
+  for (const exposed of [false, true]) {
+    const next = exposed ? take(14) : [...take(5), ...take(8), ...take(10)];
+    const ctx = contextFor([hand, next, take(16), []]);
+    ctx.players[3].finishRank = 1;
+    ctx.publicTransfers = [...next.map(card => ({card, fromSeat: 0, toSeat: 1})),
+      {card: take(16)[0], fromSeat: 0, toSeat: 2}];
+    const analysis = await analyzeDecision(hand, leads, leads, null, 3, undefined, findBestPlay);
+    analysis.trickForecast = forecastTrick(hand, leads, null, 3, ctx, generateLegalPlays, Infinity);
+    const result = finalizeAiDecision(exposed ? low : triple, leads, hand, null, true, 3, ctx, analysis);
+    if (exposed) assert.notEqual(result?.type, PatternType.Single, 'next opponent goes out before partner');
+    else assert.equal(result?.type, PatternType.Single, 'partner can finish without delaying own exit');
+  }
+});

@@ -136,6 +136,7 @@ export interface DecisionAnalysis {
 /** Position after each other active seat has had at most one response. The
  * current leader may still be beaten after this horizon. Not a win probability. */
 export interface TrickForecast {
+  allDeals?: boolean;
   samples: number;
   teamAhead: number;
   partnerAhead: number;
@@ -154,10 +155,15 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
   const shape = (p: CardPattern | null) => p ? [p.type, p.rank, p.length].join(':') : 'PASS';
   const options: Array<CardPattern | null> = last ? [...candidates, null] : candidates;
   const roots = [...new Map(options.map(p => [shape(p), p])).values()];
+  const shortPartner = context.players.some(p => p.relation === 'partner' && p.finishRank === null && p.cardCount <= 5);
+  const deals = !last && shortPartner ? enumerateHiddenHands(hand, context, knowledge, 16) : null;
+  let weightSum = 0;
   const totals = roots.map(() => ({ samples: 0, teamAhead: 0, partnerAhead: 0, allyExit: 0, enemyExit: 0 }));
-  for (let sample = 0; sample < 8 && performance.now() < deadline; sample++) {
-    const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, random, 2);
+  for (let sample = 0; sample < (deals?.length ?? 8) && performance.now() < deadline; sample++) {
+    const deal = deals ? deals[sample] : sampleHiddenHandsWeighted(hand, context, knowledge, level, random, 2);
     if (!deal) break;
+    const weight = deals ? behaviorConsistencyWeight(deal, context, level) : 1;
+    weightSum += weight;
     // Build each seat's responses once per deal, using only that seat's hand.
     const replies = deal.map((cards, seat) => {
       if (!cards.length || seat === self) return [];
@@ -208,7 +214,7 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
         if (!n[seat]) exit = seat;
       }
       if (exit >= 0) {
-        if (exit % 2 === self % 2) total.allyExit++; else total.enemyExit++;
+        if (exit % 2 === self % 2) total.allyExit += weight; else total.enemyExit += weight;
       } else if (!n[leader]) {
         // The original finishing player led the trick; award a closed pass
         // sequence to the actual catch-wind seat.
@@ -218,16 +224,16 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
           if (n[s]) { leader = s; break; }
         }
       }
-      total.teamAhead += Number(leader % 2 === self % 2);
-      total.partnerAhead += Number(leader === context.partnerSeatIndex);
+      total.teamAhead += weight * Number(leader % 2 === self % 2);
+      total.partnerAhead += weight * Number(leader === context.partnerSeatIndex);
       total.samples++;
     }
   }
-  if (!totals.length || totals[0].samples < 4) return;
+  if (!totals.length || (deals ? totals[0].samples !== deals.length : totals[0].samples < 4)) return;
   const byShape = new Map(roots.map((p, i) => {
     const t = totals[i], n = t.samples;
-    return [shape(p), { samples: n, teamAhead: t.teamAhead / n,
-      partnerAhead: t.partnerAhead / n, allyExit: t.allyExit / n, enemyExit: t.enemyExit / n }];
+    return [shape(p), { samples: n, allDeals: deals ? true : undefined, teamAhead: t.teamAhead / weightSum,
+      partnerAhead: t.partnerAhead / weightSum, allyExit: t.allyExit / weightSum, enemyExit: t.enemyExit / weightSum }];
   }));
   return Object.fromEntries(options.map(p => [p ? analysisKey(p) : 'PASS', byShape.get(shape(p))!]));
 }

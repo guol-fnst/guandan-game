@@ -954,7 +954,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, two_tricks: 45, team_baseline: 45, last_defender: 780,
+  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_lead: 60, two_tricks: 45, team_baseline: 45, last_defender: 780,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1329,6 +1329,39 @@ export function finalizeAiDecision(
       }
     }
   }
+  // Between equally fast exits, prefer a genuine chance for the partner to
+  // finish. Check the intervening seats before giving up a safe lead.
+  if (free && selected && context && analysis.trickForecast
+    && context.players.some(p => p.relation === 'partner' && p.finishRank === null && p.cardCount <= 5)) {
+    const originalLead = selected;
+    const baseKey = analysisKey(selected);
+    const base = analysis.candidates[baseKey];
+    const first = analysis.trickForecast[baseKey];
+    const price = controlResourceCost(selected, hand, level);
+    if (base?.remainingTurns.exact && first && (first.allDeals || first.samples >= 8)
+      && !base.endgameRoute?.controlProven && !publicControlEvidence(selected, hand, level, context)?.unbeatable) {
+      let bestGain = 0;
+      for (const alternative of candidates) {
+        const key = analysisKey(alternative), after = analysis.candidates[key], next = analysis.trickForecast[key];
+        if (!next || next.samples !== first.samples || !after?.remainingTurns.exact
+          || after.remainingTurns.turns > base.remainingTurns.turns || next.enemyExit > first.enemyExit
+          || next.allyExit < first.allyExit || controlResourceCost(alternative, hand, level) > price) continue;
+        const gain = next.allyExit - first.allyExit + first.enemyExit - next.enemyExit;
+        if (gain <= bestGain || (!next.allDeals && (gain < 0.25 || context.players.some(p =>
+          p.relation === 'opponent' && p.finishRank === null && p.cardCount === alternative.length)))
+          || reliablyBetterSimulation(base.simulation, after.simulation)
+          || (analysis.simulation.status === 'all_deals_policy_rollout' && base.simulation && after.simulation
+            && base.simulation.meanReward > after.simulation.meanReward + 1e-9)) continue;
+        const guarded = guard(alternative);
+        if (guarded && analysisKey(guarded) === key) {
+          selected = guarded;
+          bestGain = gain;
+        }
+      }
+      if (bestGain > 0) accepted = [...accepted, { rule: 'team_lead', priority: AI_POLICY_PRIORITY.team_lead,
+        from: policyAction(originalLead), to: policyAction(selected) }];
+    }
+  }
   // Compare the outcomes of actual guarded actions, not their pre-guard scores.
   // Keep the original baseline fixed: several marginal gains cannot chain into
   // an override, and a corrected action cannot hide a better later alternative.
@@ -1472,7 +1505,7 @@ export async function findSmartPlay(
     hand, allPlays, legalPlays, isFreePlay ? null : lastPattern,
     currentLevel, context, findBestPlay, { generateReplies: generateLegalPlays },
   );
-  if (context && analysis.simulation.samples < 8) {
+  if (context && (analysis.simulation.samples < 8 || (isFreePlay && analysis.teamRoutes?.some(r => r.goal === 'feed_partner')))) {
     analysis.trickForecast = largeDeal ? earlyForecast : forecastTrick(hand, legalPlays, isFreePlay ? null : lastPattern,
       currentLevel, context, generateLegalPlays, performance.now() + 150);
   }
