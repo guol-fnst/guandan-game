@@ -362,12 +362,8 @@ export default function GameRoom() {
   }, [gameState?.roomId, myCards.length, spectatorMode]);
 
   const handlePlay = () => {
-    if (selectedCardIds.size === 0) {
-      handlePass();
-      return;
-    }
-
     const selected = myCards.filter(c => selectedCardIds.has(c.id));
+    if (!selected.length) return;
     const socket = getSocket();
     if (selected.length > 1 && selected.some(card => card.rank === gameState?.currentLevel && card.suit === 'H')) {
       socket?.emit('declare_play', { cards: selected }, (options: CardPattern[]) => {
@@ -695,9 +691,9 @@ export default function GameRoom() {
                   <button
                     className="btn-primary"
                     onClick={handlePlay}
-                    disabled={!isMyTurn}
+                    disabled={!isMyTurn || !selectedCardIds.size}
                     style={{
-                      opacity: isMyTurn ? 1 : 0.4,
+                      opacity: isMyTurn && selectedCardIds.size ? 1 : 0.4,
                       padding: '8px 24px',
                       fontSize: 14,
                       fontWeight: 700,

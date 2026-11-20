@@ -23,7 +23,12 @@ test('finished player disconnect preserves seats and catch wind, then rejoining 
     room.state!.currentPlayerIndex = 1;
     assert.equal(room.removePlayer('p0', sockets[0]), true);
     assert.deepEqual(room.players.map(p => p.id), ['p0', 'p1', 'p2', 'p3']);
-    for (const id of ['p1', 'p2', 'p3']) assert.equal(room.playCards(id, []).success, true);
+    const timer = room.turnTimer;
+    assert.equal(room.playCards('p1', []).success, false);
+    assert.equal(room.handlePass('p2').success, false);
+    assert.equal(room.turnTimer, timer);
+    assert.equal(room.state!.passCount, 0);
+    for (const id of ['p1', 'p2', 'p3']) assert.equal(room.handlePass(id).success, true);
     assert.equal(room.state!.currentPlayerIndex, 2);
     assert.equal(room.state!.lastPlay, null);
     assert.ok(room.turnTimer);

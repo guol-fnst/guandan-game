@@ -632,9 +632,7 @@ export class GameRoom {
     }
 
     const hand = this.hands.get(playerId) || [];
-    if (cards.length === 0) {
-      return this.handlePass(playerId);
-    }
+    if (!Array.isArray(cards) || cards.length === 0) return { success: false, error: '请先选牌' };
 
     if (new Set(cards.map(card => card.id)).size !== cards.length) return { success: false, error: '不能重复选择同一张牌' };
     const handCardIds = new Set(hand.map(c => c.id));
@@ -715,8 +713,9 @@ export class GameRoom {
     return { success: true };
   }
 
-  private handlePass(playerId: string): { success: boolean; error?: string } {
-    if (!this.state) return { success: false, error: '游戏未在进行中' };
+  handlePass(playerId: string): { success: boolean; error?: string } {
+    if (!this.state || this.state.phase !== GamePhase.Playing) return { success: false, error: '游戏未在进行中' };
+    if (this.players[this.state.currentPlayerIndex]?.id !== playerId) return { success: false, error: '不是你的回合' };
 
     if (!this.state.lastPlay) {
       return { success: false, error: '首轮必须出牌' };
