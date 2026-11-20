@@ -1371,6 +1371,7 @@ export function groundStrategyPlan(
 
 export interface AiDecisionTrace {
   source: 'primary' | 'backup' | 'local' | 'forced';
+  divergence?: { baseline: string; prepared?: string; proposal?: string; final: string };
   routes?: string[];
   model?: string;
   corrected: boolean;
@@ -1593,6 +1594,12 @@ export async function findSmartPlay(
   };
   const local = baseline;
   const prepared = compareTwoTricks(local);
+  const divergence = (final: CardPattern | null, proposal?: CardPattern | null): AiDecisionTrace['divergence'] => {
+    const original = key(baseline), ready = key(prepared), played = key(final);
+    const suggested = proposal === undefined ? undefined : key(proposal);
+    if (original === ready && ready === played && (suggested === undefined || suggested === played)) return;
+    return { baseline: original, prepared: ready === original ? undefined : ready, proposal: suggested, final: played };
+  };
   const localNotes = corrections;
   options.onLocalReady?.(prepared);
 
@@ -1668,7 +1675,7 @@ export async function findSmartPlay(
         // model omitted a plan. Model prose is never evidence of retained cards.
         const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
         if (grounded) onPlan?.(grounded);
-        onDecision?.({ ...executedEvidence(final), source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
+        onDecision?.({ ...executedEvidence(final), divergence: divergence(final, llmResult), source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
           trickSamples: analysis.trickForecast?.[key(final)]?.samples,
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
@@ -1680,7 +1687,7 @@ export async function findSmartPlay(
   corrections = localNotes;
   const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
   if (grounded) onPlan?.(grounded);
-  onDecision?.({ ...executedEvidence(final), source: 'local', routes: routeGoals(final), corrections,
+  onDecision?.({ ...executedEvidence(final), divergence: divergence(final), source: 'local', routes: routeGoals(final), corrections,
     trickSamples: analysis.trickForecast?.[key(final)]?.samples, corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;

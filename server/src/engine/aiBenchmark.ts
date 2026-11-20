@@ -1,5 +1,6 @@
 import path from 'node:path';
 import * as current from './ai';
+import { analysisKey, rollout } from './aiAnalysis';
 import { EvaluationPolicy, seededRandom, shuffledDeal, simulatePolicyRound } from './aiEvaluation';
 import type { AiStrategyMemory, AiStrategyPlan } from './llmAi';
 
@@ -21,10 +22,12 @@ function policy(engine: typeof current, mode: string, calls: Record<string, numb
     const saved = credentials.map(name => process.env[name]);
     // Frozen revisions may predate useModel. Force their real offline fallback.
     if (mode === 'local' && engine !== current) for (const name of credentials) delete process.env[name];
+    let disagreement: current.AiDecisionTrace['divergence'];
     let action: Awaited<ReturnType<typeof current.findSmartPlay>>;
     try {
       action = await engine.findSmartPlay(hand, trick, free, level, ctx, undefined,
         p => { plan = p; }, trace => {
+          disagreement = trace.divergence;
           calls[trace.source] = (calls[trace.source] || 0) + 1;
           if (trace.corrections?.some(note => note.rule === 'team_trick')) calls.teamTrick = (calls.teamTrick || 0) + 1;
           if (trace.corrections?.some(note => note.rule === 'team_baseline')) calls.teamBaseline = (calls.teamBaseline || 0) + 1;
@@ -34,6 +37,28 @@ function policy(engine: typeof current, mode: string, calls: Record<string, numb
       if (mode === 'local' && engine !== current) credentials.forEach((name, i) => {
         if (saved[i] !== undefined) process.env[name] = saved[i];
       });
+    }
+    if (disagreement) {
+      calls.divergences = (calls.divergences || 0) + 1;
+      const step = (ctx.actionHistory?.length || 0) + 1;
+      // Offline evaluation only. Each continuation sees the same deal and uses
+      // the same public-information policy after the differing first move.
+      if (process.env.GUANDAN_REPLAY_DIVERGENCES === '1') {
+        const spent = new Set(ctx.actionHistory?.flatMap(a => a.pattern?.cards.map(c => c.id) || []));
+        const hands = shuffledDeal(seed).map(cards => cards.filter(c => !spent.has(c.id)));
+        const legal = new Map(current.generateLegalPlays(hand, level).map(play => [analysisKey(play), play]));
+        const levels: Record<string, number> = {};
+        for (const key of new Set(Object.values(disagreement))) {
+          if (!key) continue;
+          const play = legal.get(key);
+          if (!play && key !== 'PASS') throw new Error('unreplayable divergence: ' + key);
+          const result = rollout(hands, play || null, trick, level, ctx, current.findBestPlay, Infinity);
+          if (!result) throw new Error('invalid divergence continuation');
+          levels[key] = Math.round(3 * result.reward);
+        }
+        console.log(JSON.stringify({ seed, seat, step, disagreement, heuristicNetLevels: levels,
+          publicHistory: ctx.actionHistory?.map(a => [a.seatIndex, a.pattern ? analysisKey(a.pattern) : 'PASS']) }));
+      }
     }
     if (plan) memory.set(seat, { ...plan, afterAction: (ctx.actionHistory?.length || 0) + 1,
       executed: action ? action.type + ':' + action.rank + ':' + action.cards.length : 'PASS' });
