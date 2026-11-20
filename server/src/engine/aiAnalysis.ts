@@ -8,6 +8,60 @@ export type ChoosePlay = (
   context: AiDecisionContext,
 ) => CardPattern | null;
 
+/** The unchanged trick after our PASS: who can still respond, or who gets
+ * the next lead (including catch-wind after a finished leader). */
+export function passPosition(context: AiDecisionContext, last?: CardPattern | null) {
+  const active = context.players.filter(player => player.finishRank === null);
+  const leader = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
+  const needed = active.length - (leader?.finishRank === null ? 1 : 0);
+  const remaining = Math.max(0, needed - (context.passCount || 0) - 1);
+  const responders: number[] = [];
+  for (let step = 1; step <= 4 && responders.length < remaining; step++) {
+    const seat = (context.selfSeatIndex + step) % 4;
+    if (seat !== context.selfSeatIndex && seat !== leader?.seatIndex
+      && active.some(player => player.seatIndex === seat)) responders.push(seat);
+  }
+  let nextLead = leader?.seatIndex;
+  if (leader && leader.finishRank !== null) {
+    const partner = (leader.seatIndex + 2) % 4;
+    for (let step = 0; step < 4; step++) {
+      const seat = (partner + step) % 4;
+      if (active.some(player => player.seatIndex === seat)) { nextLead = seat; break; }
+    }
+  }
+  const partner = active.find(player => player.seatIndex === context.partnerSeatIndex);
+  // A hand shorter than the table shape can still respond with a bomb.
+  // Enough cards means possible, never that the partner holds a response.
+  const partnerMayRespond = !!partner && responders.includes(partner.seatIndex)
+    && (!last || (last.type !== PatternType.KingBomb && partner.cardCount >= Math.min(last.length, 4)));
+  return { closesTrick: remaining === 0, responders, nextLead, partnerMayRespond };
+}
+
+/**
+ * Guandan endgame defence against the clockwise next player: once the AI has
+ * decided to play the reported shape, it must use its strongest legal one.
+ * This deliberately does not force a single/pair lead or turn a PASS into a
+ * play; it only replaces a chosen single/pair with the largest equivalent.
+ */
+export function enforceReportedNextPlayerMaximum(
+  proposed: CardPattern | null,
+  candidates: CardPattern[],
+  nextPlayerCardCount: number,
+  level: number,
+): CardPattern | null {
+  if (!proposed) return proposed;
+  const requiredType = nextPlayerCardCount === 1
+    ? PatternType.Single
+    : nextPlayerCardCount === 2
+      ? PatternType.Pair
+      : null;
+  if (requiredType === null || proposed.type !== requiredType) return proposed;
+
+  const sameType = candidates.filter(play => play.type === requiredType);
+  return sameType.reduce((strongest, play) =>
+    canBeat(play, strongest, level) ? play : strongest, proposed);
+}
+
 export function resourceCost(hand: Card[], play: CardPattern, level: number) {
   const used = new Set(play.cards.map(c => c.id));
   const remaining = hand.filter(c => !used.has(c.id));
@@ -105,6 +159,16 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
       });
       return options.sort((a, b) => a.price - b.price).map(o => o.play);
     });
+    // Opponents also see a reported hand. If they contest a feed before a
+    // short rival, evaluate a blocking single/pair instead of an automatic low reply.
+    const blocks = replies.map((options, seat) => {
+      const next = (seat + 1) % 4;
+      return [null, ...[1, 2].map(count => {
+        if (next !== self && deal[next].length !== count) return null;
+        const first = options.find(p => p.type === (count === 1 ? PatternType.Single : PatternType.Pair));
+        return first ? enforceReportedNextPlayerMaximum(first, options, count, level) : null;
+      })];
+    });
     for (const [index, root] of roots.entries()) {
       const n = deal.map(cards => cards.length);
       let leader = root ? self : context.lastPlayPlayerIndex;
@@ -120,8 +184,12 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
         const beats = (p: CardPattern) => canBeat(p, trick, level);
         const finish = replies[seat].find(p => p.cards.length === n[seat] && beats(p));
         const contest = leader % 2 !== seat % 2;
-        const response = finish || (contest && replies[seat].find(p => beats(p)
+        let response = finish || (contest && replies[seat].find(p => beats(p)
           && (!isBombPattern(p) || n[leader] <= 5)));
+        const block = blocks[seat][n[(seat + 1) % 4]];
+        if (!finish && response && block?.type === response.type && canBeat(block, response, level)) {
+          response = block;
+        }
         if (!response) { passes++; continue; }
         n[seat] -= response.cards.length;
         leader = seat; trick = response; passes = 0;

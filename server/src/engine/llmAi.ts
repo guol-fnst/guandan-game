@@ -2,7 +2,7 @@ import { STRATEGY_GUIDE, strategyBrief } from './aiStrategy';
 import { AiModelSelection, AiProvider, Card, CardPattern, PatternType, Rank } from '../../../shared/types';
 import { cardDisplayName, sortCards } from './card';
 import { isBombPattern } from './compare';
-import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo, resourceCost } from './aiAnalysis';
+import { analysisKey, buildPublicKnowledge, buildTeamPlan, decisionTempo, passPosition, resourceCost } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
@@ -350,6 +350,7 @@ ${STRATEGY_GUIDE}
 证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
 strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写。按所选动作的cost核对资源；消耗A、王、自然级牌、逢人配、拆炸或uses_bomb为true时，resource_use必须为spend_justified。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
+after_pass.responders是过牌后仍能应牌的座位；partnerMayRespond=false时不能指望队友接，nextLead是无人再压时的领牌人。对手已拿头游时要比较放其队友续领造成双上的代价。声称减手须核对remainingTurns与hand_turns。
 next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他座位各应一次后本方占先比例，partnerAhead是队友占先比例，allyExit、enemyExit是这一圈先有人走完的比例。这是短程估计，结合余牌手数与保留控制比较。
 从legal_actions返回action_id（跟牌可PASS），decision_check执行固定自检，strategy_plan写本次执行后的下一步及失效条件。不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
@@ -407,6 +408,7 @@ next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他�
     wildcards: hand
       .filter(card => card.rank === currentLevel && card.suit === 'H')
       .map(card => cardDisplayName(card)),
+    after_pass: context && !isFreePlay ? passPosition(context, lastPattern) : undefined,
     current_trick: {
       player: lastPlayerLabel,
       pattern: describePattern(lastPattern),

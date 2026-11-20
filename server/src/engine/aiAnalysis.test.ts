@@ -324,6 +324,18 @@ test('paired one-cycle forecast distinguishes feeding a finishing partner from f
   assert.equal(pass.enemyExit, 0, 'closing the trick gives the original leader initiative, without another response');
 });
 
+test('forecast allows the intervening opponent to block a one-card partner', () => {
+  const deck = createDeck();
+  const card = (rank: Rank) => deck.find(c => c.rank === rank)!;
+  const hands = [[card(3), card(11)], [card(5), card(14)], [card(10)], [card(7), card(8)]];
+  const context = contextFor(hands);
+  context.publicTransfers = hands.flatMap((cards, seat) => seat === 0 ? []
+    : cards.map(card => ({ card, fromSeat: 0, toSeat: seat })));
+  const lead = generateLegalPlays(hands[0], 2).find(p => p.rank === 3)!;
+  const forecast = forecastTrick(hands[0], [lead], null, 2, context, generateLegalPlays, Infinity)!;
+  assert.equal(forecast[analysisKey(lead)].allyExit, 0, 'the opponent can cover the feed with the ace');
+});
+
 test('endgame uses balanced complete samples and labels exhausted/incomplete runs', async () => {
   const deck = createDeck();
   const hands = [[deck[0], deck[1]], [deck[2], deck[3]], [deck[4], deck[5]], [deck[6], deck[7]]];

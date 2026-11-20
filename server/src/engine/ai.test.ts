@@ -757,6 +757,13 @@ test('passing distinguishes last interception, remaining partner response and ca
   const base = fourPlayerContext({ lastPlayPlayerIndex: 3, passCount: 0 });
   const lastChance = { ...base, passCount: 2 };
   assert.deepEqual(passPosition(base).responders, [1, 2]);
+  const tripletPair = { ...last, type: PatternType.TriplePair, length: 5 };
+  for (const count of [3, 4]) {
+    const shortPartner = { ...base, players: base.players.map(p => p.seatIndex === 2 ? { ...p, cardCount: count } : p) };
+    assert.equal(passPosition(shortPartner, tripletPair).partnerMayRespond, count === 4,
+      'three cards cannot beat a full house, four may be a bomb');
+  }
+  assert.equal(passPosition(lastChance, last).partnerMayRespond, false);
   assert.equal(passPosition(lastChance).closesTrick, true);
   assert.ok(scorePass(hand, last, Rank.Two, lastChance) < scorePass(hand, last, Rank.Two, base));
   const short = { ...base, players: base.players.map(p => p.seatIndex === 3 ? { ...p, cardCount: 3 } : p) };

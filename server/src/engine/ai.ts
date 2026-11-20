@@ -6,8 +6,10 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
+
+export { enforceReportedNextPlayerMaximum, passPosition } from './aiAnalysis';
 
 function getRankCounts(hand: Card[]): Map<number, Card[]> {
   const map = new Map<number, Card[]>();
@@ -758,31 +760,6 @@ function orderCandidates(
   return [...plays].sort((a, b) => scores.get(b)! - scores.get(a)!);
 }
 
-/**
- * Guandan endgame defence against the clockwise next player: once the AI has
- * decided to play the reported shape, it must use its strongest legal one.
- * This deliberately does not force a single/pair lead or turn a PASS into a
- * play; it only replaces a chosen single/pair with the largest equivalent.
- */
-export function enforceReportedNextPlayerMaximum(
-  proposed: CardPattern | null,
-  candidates: CardPattern[],
-  nextPlayerCardCount: number,
-  level: number,
-): CardPattern | null {
-  if (!proposed) return proposed;
-  const requiredType = nextPlayerCardCount === 1
-    ? PatternType.Single
-    : nextPlayerCardCount === 2
-      ? PatternType.Pair
-      : null;
-  if (requiredType === null || proposed.type !== requiredType) return proposed;
-
-  const sameType = candidates.filter(play => play.type === requiredType);
-  return sameType.reduce((strongest, play) =>
-    canBeat(play, strongest, level) ? play : strongest, proposed);
-}
-
 function enforceNextPlayerReport(
   proposed: CardPattern | null, candidates: CardPattern[], level: number,
   context?: AiDecisionContext, hand?: Card[],
@@ -856,30 +833,6 @@ export function findBestPlay(
     if (!proposed || scores.get(proposed)! <= passScore) return null;
   }
   return proposed;
-}
-
-/** The unchanged trick after our PASS: who can still respond, or who gets
- * the next lead (including catch-wind after a finished leader). */
-export function passPosition(context: AiDecisionContext) {
-  const active = context.players.filter(player => player.finishRank === null);
-  const leader = context.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
-  const needed = active.length - (leader?.finishRank === null ? 1 : 0);
-  const remaining = Math.max(0, needed - (context.passCount || 0) - 1);
-  const responders: number[] = [];
-  for (let step = 1; step <= 4 && responders.length < remaining; step++) {
-    const seat = (context.selfSeatIndex + step) % 4;
-    if (seat !== context.selfSeatIndex && seat !== leader?.seatIndex
-      && active.some(player => player.seatIndex === seat)) responders.push(seat);
-  }
-  let nextLead = leader?.seatIndex;
-  if (leader && leader.finishRank !== null) {
-    const partner = (leader.seatIndex + 2) % 4;
-    for (let step = 0; step < 4; step++) {
-      const seat = (partner + step) % 4;
-      if (active.some(player => player.seatIndex === seat)) { nextLead = seat; break; }
-    }
-  }
-  return { closesTrick: remaining === 0, responders, nextLead };
 }
 
 export function scorePass(
@@ -989,7 +942,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45,
+  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_baseline: 45, last_defender: 780,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1531,23 +1484,36 @@ export async function findSmartPlay(
   // Compare the two actions that would actually be played, including PASS.
   // Full-game evidence takes precedence over a one-cycle estimate. When the
   // estimates are close the model retains discretion about the route.
-  const preferLocal = (modelPlay: CardPattern | null) => {
-    if (!context || key(local) === key(modelPlay) || modelPlay?.cards.length === hand.length) return false;
+  const localOverride = (modelPlay: CardPattern | null): AiPolicyCorrection['rule'] | undefined => {
+    if (!context || key(local) === key(modelPlay) || modelPlay?.cards.length === hand.length) return;
     const result = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.simulation : analysis.passSimulation;
-    if (reliablyBetterSimulation(result(modelPlay), result(local))) return false;
-    if (reliablyBetterSimulation(result(local), result(modelPlay))) return true;
+    if (reliablyBetterSimulation(result(modelPlay), result(local))) return;
+    if (reliablyBetterSimulation(result(local), result(modelPlay))) return 'team_baseline';
     const entry = modelPlay && analysis.candidates[key(modelPlay)];
-    if (entry?.endgameRoute?.controlProven) return false;
+    if (entry?.endgameRoute?.controlProven) return;
+    if (!modelPlay && local && !isFreePlay && lastPattern) {
+      const position = passPosition(context, lastPattern);
+      const next = context.players.find(p => p.seatIndex === position.nextLead);
+      if (!position.partnerMayRespond && next?.relation === 'opponent' && next.cardCount <= 5
+        && next.finishRank === null) return 'last_defender';
+    }
+    const localTurns = local && analysis.candidates[key(local)]?.remainingTurns;
+    const modelTurns = entry?.remainingTurns;
+    const savedControl = local && modelPlay
+      ? openingControlCost(modelPlay, hand, currentLevel) - openingControlCost(local, hand, currentLevel) : 0;
+    const betterPartition = localTurns?.exact && modelTurns?.exact && localTurns.turns < modelTurns.turns && savedControl >= 0;
+    // In a quiet lead, an expensive extra turn needs a concrete tactical purpose.
+    if (betterPartition && modelPlay && isFreePlay && savedControl > 0
+      && analysis.handTurns.exact && modelTurns.turns >= analysis.handTurns.turns
+      && !context.players.some(p => p.relation !== 'self' && p.finishRank === null && p.cardCount <= 5)
+      && publicControlEvidence(modelPlay, hand, currentLevel, context)?.unbeatable !== true) return 'continuation';
     const localValue = value(local), modelValue = value(modelPlay);
     if (Number.isFinite(localValue) && Number.isFinite(modelValue)) {
-      return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay);
+      return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay) ? 'team_baseline' : undefined;
     }
     // Without shared tactical evidence, only count an exact partition loss;
     // never equate missing simulation data with a zero win rate.
-    const turns = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
-    const l = turns(local), m = turns(modelPlay);
-    return !!l?.exact && !!m?.exact && l.turns < m.turns && !!local && !!modelPlay
-      && openingControlCost(local, hand, currentLevel) <= openingControlCost(modelPlay, hand, currentLevel);
+    return betterPartition ? 'team_baseline' : undefined;
   };
 
   const primary = normalizeAiSelection(
@@ -1577,8 +1543,9 @@ export async function findSmartPlay(
       // undefined means the model was unavailable/invalid; null is an intentional pass.
       if (llmResult !== undefined) {
         let final = decide(llmResult);
-        if (preferLocal(final)) {
-          corrections = [...corrections, { rule: 'team_baseline', priority: AI_POLICY_PRIORITY.team_baseline,
+        const override = localOverride(final);
+        if (override) {
+          corrections = [...corrections, { rule: override, priority: AI_POLICY_PRIORITY[override],
             from: policyAction(final), to: policyAction(local) }];
           final = local;
         }
