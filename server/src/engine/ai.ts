@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL, HW_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain, decisionTempo, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickGain, decisionTempo, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 export { enforceReportedNextPlayerMaximum, passPosition } from './aiAnalysis';
@@ -954,7 +954,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_lead: 60, two_tricks: 45, team_baseline: 45, last_defender: 780,
+  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_lead: 60, two_tricks: 45, two_trick_position: 45, team_baseline: 45, last_defender: 780,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1599,10 +1599,10 @@ export async function findSmartPlay(
       if (roots.length === 3) break;
     }
     const forecast = await forecastTwoTricks(hand, roots, isFreePlay ? null : lastPattern,
-      currentLevel, context, findBestPlay, planningDeadline);
+      currentLevel, context, findBestPlay, planningDeadline, Math.random, generateLegalPlays);
     // Weak partial-horizon evidence should not steer the external model either.
     const measured = Object.values(forecast || {});
-    if (measured.some(a => measured.some(b => twoTrickExitGain(a, b) > 0))) analysis.twoTricks = forecast;
+    if (measured.some(a => measured.some(b => twoTrickGain(a, b) > 0))) analysis.twoTricks = forecast;
   }
   corrections = baselineNotes;
   const compareTwoTricks = (accepted: CardPattern | null) => {
@@ -1615,14 +1615,17 @@ export async function findSmartPlay(
     let gain = 0;
     for (const alternative of roots) {
       const next = evidence[key(alternative)];
-      const improvement = twoTrickExitGain(before, next);
+      const improvement = twoTrickGain(before, next);
       if (improvement > gain) {
         best = alternative;
         gain = improvement;
       }
     }
-    if (key(best) !== key(accepted)) corrections = [...corrections, { rule: 'two_tricks', priority: AI_POLICY_PRIORITY.two_tricks,
-      from: policyAction(accepted), to: policyAction(best) }];
+    if (key(best) !== key(accepted)) {
+      const rule = gain >= 0.5 ? 'two_tricks' : 'two_trick_position';
+      corrections = [...corrections, { rule, priority: AI_POLICY_PRIORITY[rule],
+        from: policyAction(accepted), to: policyAction(best) }];
+    }
     return best;
   };
   const local = baseline;

@@ -6,7 +6,7 @@ import { createDeck } from './card';
 import { findBestPlay, generateLegalPlays, findSmartPlay, enforceTeamStrategy, finalizeAiDecision, limitModelCandidates, removeWastefulWildRealizations, groundStrategyPlan, pruneOpeningWildLeads } from './ai';
 import type { DecisionAnalysis } from './aiAnalysis';
 import {
-  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain,
+  analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamRoutes, buildTeamPlan, createTurnEstimator, forecastTrick, forecastTwoTricks, twoTrickExitGain, twoTrickGain,
   rollout, sampleHiddenHands, sampleHiddenHandsWeighted, enumerateHiddenHands, publicControlEvidence,
   behaviorConsistencyWeight, inferSeatBeliefs, decisionTempo, resourceCost, tailControlCost,
 } from './aiAnalysis';
@@ -1539,4 +1539,27 @@ test('equal-turn team leads send a partner out but respect an intervening finish
     if (exposed) assert.notEqual(result?.type, PatternType.Single, 'next opponent goes out before partner');
     else assert.equal(result?.type, PatternType.Single, 'partner can finish without delaying own exit');
   }
+});
+
+test('paired nonterminal leaves compare actual exits, control and the next free lead', async () => {
+  const deck = createDeck();
+  const hand = [deck.find(c => c.rank === 3)!, deck.find(c => c.rank === 4)!,
+    ...deck.filter(c => c.rank === 9).slice(0, 3)];
+  const rest = deck.filter(c => c.rank === 6 || c.rank === 8).slice(0, 9);
+  const ctx = contextFor([hand, rest.slice(0, 3), rest.slice(3, 6), rest.slice(6)]);
+  const plays = generateLegalPlays(hand, 2);
+  const loose = plays.find(p => p.rank === 3)!;
+  const split = plays.find(p => p.type === PatternType.Pair && p.rank === 9)!;
+  const forecast = await forecastTwoTricks(hand, [loose, split], null, 2, ctx,
+    (cards, _trick, free) => free ? generateLegalPlays(cards, 2).find(p => p.type === PatternType.Single)! : null,
+    Infinity, () => 0.5, generateLegalPlays);
+  const intact = forecast![analysisKey(loose)], broken = forecast![analysisKey(split)];
+  assert.equal(intact.position?.samples, 8);
+  assert.equal(intact.position?.readyLead, 1);
+  assert.equal(broken.position?.readyLead, 0);
+  assert.equal(intact.position!.turnAdvantage - broken.position!.turnAdvantage, 1);
+  assert.ok(twoTrickGain(broken, intact) > 0);
+  assert.equal(twoTrickGain(intact, broken), 0);
+  assert.equal(twoTrickGain(broken, { ...intact, enemyExit: 0.125 }), 0);
+  assert.equal(twoTrickGain(broken, { ...intact, position: { ...intact.position!, controlBalance: -1 } }), 0);
 });

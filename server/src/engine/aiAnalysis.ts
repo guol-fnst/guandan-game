@@ -830,6 +830,8 @@ export interface TwoTrickForecast {
   enemyExit: number;
   /** Unconditional share: nobody finished and our team won the second trick. */
   retainedLead: number;
+  // Conditional means on the same nonterminal deals for every root.
+  position?: { samples: number; turnAdvantage: number; controlBalance: number; readyLead: number };
 }
 
 // Prefer a route only on a large change in actual exits, with neither side
@@ -841,13 +843,25 @@ export function twoTrickExitGain(before: TwoTrickForecast, after: TwoTrickForeca
   return gain >= 0.5 ? gain : 0;
 }
 
+export function twoTrickGain(before: TwoTrickForecast, after: TwoTrickForecast): number {
+  const exitGain = twoTrickExitGain(before, after);
+  if (exitGain > 0) return exitGain;
+  const a = before.position, b = after.position;
+  if (!a || !b || a.samples < 6 || a.samples !== b.samples || after.samples !== before.samples
+    || after.allyExit !== before.allyExit || after.enemyExit !== before.enemyExit
+    || after.retainedLead < before.retainedLead || b.controlBalance < a.controlBalance
+    || b.readyLead < a.readyLead || b.turnAdvantage < a.turnAdvantage) return 0;
+  // A positional tie-break ranks below any qualifying actual exit gain (>= .5).
+  return b.turnAdvantage - a.turnAdvantage >= 1 || b.readyLead - a.readyLead >= 0.5 ? 0.25 : 0;
+}
+
 /** Both horizons use the same passes, catch-wind and finishing order. Only
  * complete games produce a rank reward; short continuations stop at an exit
  * or the second closed trick (including the trick currently in progress). */
 function runContinuation<T>(
   initialHands: Card[][], root: CardPattern | null, last: CardPattern | null,
   level: number, context: AiDecisionContext, choose: ChoosePlay, deadline: number,
-  finish: (places: number[], nextLeader: number | null) => T,
+  finish: (places: number[], nextLeader: number | null, remaining: Card[][]) => T,
   short: boolean, replyBranch?: ReplyBranch,
 ): T | null {
   let closedTricks = 0;
@@ -914,7 +928,7 @@ function runContinuation<T>(
       trick = action; winner = seat; passes = 0;
       if (!hands[seat].length) finishes.push(seat);
       if ((short && !hands[seat].length) || finishes.length >= 3
-        || (finishes.length === 2 && finishes[0] % 2 === finishes[1] % 2)) return finish(finishes, null);
+        || (finishes.length === 2 && finishes[0] % 2 === finishes[1] % 2)) return finish(finishes, null, hands);
       seat = nextActive(seat);
     } else {
       if (!trick) return null;
@@ -925,7 +939,7 @@ function runContinuation<T>(
         const partner = (winner + 2) % 4;
         seat = finishes.includes(winner)
           ? finishes.includes(partner) ? nextActive(partner) : partner : winner;
-        if (short && ++closedTricks === 2) return finish(finishes, seat);
+        if (short && ++closedTricks === 2) return finish(finishes, seat, hands);
         trick = null; winner = -1; passes = 0;
       } else seat = nextActive(seat);
     }
@@ -949,11 +963,37 @@ export function rollout(
 export async function forecastTwoTricks(
   hand: Card[], roots: (CardPattern | null)[], last: CardPattern | null, level: number,
   context: AiDecisionContext, choose: ChoosePlay, deadline: number, random = Math.random,
+  generate?: GenerateReplies,
 ): Promise<Record<string, TwoTrickForecast> | undefined> {
   if (roots.length < 2 || performance.now() >= deadline) return;
   const knowledge = buildPublicKnowledge(hand, context);
   if (!knowledge) return;
   const totals = roots.map(() => ({ samples: 0, allyExit: 0, enemyExit: 0, retainedLead: 0 }));
+  const positions = roots.map(() => ({ samples: 0, turnAdvantage: 0, controlBalance: 0, readyLead: 0 }));
+  const cache = new Map<string, { turns: number; controls: number } | null>();
+  const evaluate = (hands: Card[][], leader: number) => {
+    if (!generate || performance.now() >= deadline) return;
+    let turnAdvantage = 0, controlBalance = 0, readyLead = 0;
+    for (const [seat, cards] of hands.entries()) {
+      if (!cards.length) continue;
+      const key = cards.map(c => c.id).join(',');
+      if (!cache.has(key)) {
+        if (performance.now() >= deadline) return;
+        const plays = generate(cards, level);
+        const estimate = createTurnEstimator(cards, plays, Math.min(deadline, performance.now() + 4)).whole();
+        const controls = Number(plays.some(isBombPattern))
+          + Number(cards.some(c => c.rank === level || c.rank >= Rank.SmallJoker));
+        cache.set(key, estimate.exact ? { turns: estimate.turns, controls } : null);
+      }
+      const tail = cache.get(key);
+      if (!tail) return;
+      const sign = seat % 2 === ownTeam ? 1 : -1;
+      turnAdvantage -= sign * tail.turns;
+      controlBalance += sign * tail.controls;
+      if (seat === leader && tail.turns === 1) readyLead = sign;
+    }
+    return { turnAdvantage, controlBalance, readyLead };
+  };
   const ownTeam = context.selfSeatIndex % 2;
   for (let sample = 0; sample < 8; sample++) {
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -961,20 +1001,41 @@ export async function forecastTwoTricks(
     const deal = sampleHiddenHandsWeighted(hand, context, knowledge, level, random, 2);
     if (!deal) break;
     const outcomes = roots.map(root => runContinuation(deal, root, last, level, context, choose, deadline,
-      (places, leader) => leader === null
-        ? (places[places.length - 1] % 2 === ownTeam ? 'allyExit' : 'enemyExit')
-        : (leader % 2 === ownTeam ? 'retainedLead' : 'enemyLead'), true));
-    if (outcomes.some(outcome => outcome === null) || performance.now() > deadline) break;
-    outcomes.forEach((outcome, index) => {
-      totals[index].samples++;
-      if (outcome && outcome !== 'enemyLead') totals[index][outcome]++;
+      (places, leader, hands) => ({
+        exitSeat: leader === null ? places[places.length - 1] : null, leader, hands,
+      }), true));
+    const paired = outcomes.filter((o): o is NonNullable<typeof o> => o !== null);
+    if (paired.length !== roots.length || performance.now() > deadline) break;
+    paired.forEach((outcome, index) => {
+      const total = totals[index];
+      total.samples++;
+      if (outcome.exitSeat !== null) {
+        if (outcome.exitSeat % 2 === ownTeam) total.allyExit++;
+        else total.enemyExit++;
+      } else if (outcome.leader !== null && outcome.leader % 2 === ownTeam) total.retainedLead++;
     });
+    // Only compare leaves where *every* route was still playing on this deal.
+    // A timeout or an inexact cover cannot favour the cheaper branch to search.
+    if (generate && paired.every(outcome => outcome.leader !== null)) {
+      const leaves = paired.flatMap(outcome => outcome.leader !== null ? evaluate(outcome.hands, outcome.leader) || [] : []);
+      if (performance.now() <= deadline && leaves.length === roots.length) {
+        leaves.forEach((leaf, i) => {
+          const pos = positions[i];
+          pos.samples++;
+          pos.turnAdvantage += leaf.turnAdvantage;
+          pos.controlBalance += leaf.controlBalance;
+          pos.readyLead += leaf.readyLead;
+        });
+      }
+    }
   }
   if (totals[0].samples < 6) return;
   return Object.fromEntries(roots.map((root, i) => {
-    const t = totals[i];
+    const t = totals[i], pos = positions[i];
+    const position = pos.samples >= 6 ? { samples: pos.samples, turnAdvantage: pos.turnAdvantage / pos.samples,
+      controlBalance: pos.controlBalance / pos.samples, readyLead: pos.readyLead / pos.samples } : undefined;
     return [root ? analysisKey(root) : 'PASS', { samples: t.samples, allyExit: t.allyExit / t.samples,
-      enemyExit: t.enemyExit / t.samples, retainedLead: t.retainedLead / t.samples }];
+      enemyExit: t.enemyExit / t.samples, retainedLead: t.retainedLead / t.samples, ...(position && { position }) }];
   }));
 }
 

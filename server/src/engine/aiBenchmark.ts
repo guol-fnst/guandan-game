@@ -28,6 +28,9 @@ function policy(engine: typeof current, mode: string, calls: Record<string, numb
       action = await engine.findSmartPlay(hand, trick, free, level, ctx, undefined,
         p => { plan = p; }, trace => {
           disagreement = trace.divergence;
+          for (const rule of ['two_tricks', 'two_trick_position', 'team_lead'] as const) {
+            if (trace.corrections?.some(note => note.rule === rule)) calls[rule] = (calls[rule] || 0) + 1;
+          }
           calls[trace.source] = (calls[trace.source] || 0) + 1;
           if (trace.corrections?.some(note => note.rule === 'team_trick')) calls.teamTrick = (calls.teamTrick || 0) + 1;
           if (trace.corrections?.some(note => note.rule === 'team_baseline')) calls.teamBaseline = (calls.teamBaseline || 0) + 1;

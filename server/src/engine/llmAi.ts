@@ -348,7 +348,7 @@ ${STRATEGY_GUIDE}
 当前局面：${scenario}。after_pass 给出剩余应牌座位及无人再接时的领牌人；对家无法再接时须自己比较拦截。下家报单/双时比较最大普通应牌和完整炸弹。
 每个 legal_actions 行给出实体牌、替代、资源成本和可用分析；cost 省略的项为零、否或空，分析缺项表示未知。声称留炸须核对 remaining_rank_bombs。decision_check.resource_use 须符合所选行的 required_resource_use；PASS 只能 preserve 或 none。
 remainingTurns 是余牌静态手数，exact=false 是上界。next_cycle 与 pass_next_cycle 是同批底牌一圈后本队/队友占先和双方先走比例；replyFinishRisk 是对手有一手接完的抽样比例。只把 controlProven 当公开控牌证明。
-${analysis?.twoTricks ? 'two_tricks 与 pass_two_tricks 是同批底牌推到首次有人走完或两墩结束的比例；retainedLead 是无人走完且本队赢第二墩。只对已采样动作可比，不代表最终胜率。\n' : ''}team_routes 按 action_id 关联候选，PASS 的预测见 local_analysis。hand_combinations 是可供以后领出的代表组合；同一实体组合直接引用 action_id。根据当前公开事实重验 strategy_memory。`;
+${analysis?.twoTricks ? 'two_tricks 与 pass_two_tricks 是同批底牌推到首次有人走完或两墩结束的比例；retainedLead 是无人走完且本队赢第二墩。position 仅比较同批无人走完的局面：turnAdvantage 是对手总余牌手数减本方，controlBalance 是双方持炸及持王或级牌的座位数之差，readyLead 是本方减对方领牌即走完的比例。短程指标不代表终局胜率。\n' : ''}team_routes 按 action_id 关联候选，PASS 的预测见 local_analysis。hand_combinations 是可供以后领出的代表组合；同一实体组合直接引用 action_id。根据当前公开事实重验 strategy_memory。`;
 
   const lastPlayerSnapshot = context?.players.find(player =>
     player.seatIndex === context.lastPlayPlayerIndex
