@@ -40,11 +40,11 @@ Uses JSON files at `data/users.json` and `data/records.json` (no native modules 
 | `server/src/engine/compare.ts` | Pattern comparison, bomb ranking |
 | `server/src/engine/rules.ts` | Level system, tribute, partner logic |
 | `server/src/engine/ai.ts` | `findBestPlay` provides the synchronous heuristic. `findSmartPlay` selects the room action using team analysis and optional model advice. |
-| `server/src/engine/llmAi.ts` | Qwen and DeepSeek model integration for rooms with `aiUseLLM` enabled |
+| `server/src/engine/llmAi.ts` | Fueternal HW DeepSeek, Qwen and official DeepSeek model integration for rooms with `aiUseLLM` enabled |
 
 ### AI flow (critical)
 
-`GameRoom.aiPlay()` uses `findSmartPlay` for both local and model-assisted play. A forced action returns immediately. Otherwise the engine prepares a local team decision first. When enabled, it asks the room's selected model, tries the alternate provider on failure, and compares a valid proposal with the prepared decision. The 90-second watchdog can use that decision, including a pass. Turn identity prevents late model results from playing on a later turn.
+`GameRoom.aiPlay()` uses `findSmartPlay` for both local and model-assisted play. A forced action returns immediately. Otherwise the engine prepares a local team decision first. When enabled, it asks the room's selected model, tries HW DeepSeek, Qwen, then official DeepSeek on failure (the selected provider goes first), and compares a valid proposal with the prepared decision. The 90-second watchdog can use that decision, including a pass. Turn identity prevents late model results from playing on a later turn.
 
 ### GameRoom turn flow (where bugs hide)
 

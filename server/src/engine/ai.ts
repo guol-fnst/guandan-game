@@ -4,7 +4,7 @@ import {
   isWildCard, validWildSubstitutions,
 } from './patterns';
 import { canBeat, isBombPattern } from './compare';
-import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL } from './llmAi';
+import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL, HW_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
 import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
@@ -1519,12 +1519,11 @@ export async function findSmartPlay(
   const primary = normalizeAiSelection(
     (selection ?? DEFAULT_AI_SELECTION).provider, (selection ?? DEFAULT_AI_SELECTION).model,
   );
-  const backup = primary.provider === 'deepseek'
-    ? { provider: 'local' as const, model: LOCAL_AI_MODEL }
-    : normalizeAiSelection('deepseek', '');
-  // Each provider has a 20s request deadline (including body read): at most
-  // two attempts, with the existing 90s turn watchdog/stale-state guard intact.
-  for (const model of options.useModel === false ? [] : [primary, backup]) {
+  const models = [primary, { provider: 'fueternal' as const, model: HW_AI_MODEL },
+    { provider: 'local' as const, model: LOCAL_AI_MODEL }, normalizeAiSelection('deepseek', '')]
+    .filter((model, index, all) => all.findIndex(other => other.provider === model.provider) === index);
+  // Three 20s attempts fit inside the 90s turn watchdog.
+  for (const model of options.useModel === false ? [] : models) {
     try {
       const llmResult = await llmFindBestPlay(
         hand,

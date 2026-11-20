@@ -4,7 +4,7 @@ import {
   DEFAULT_AI_SELECTION,
   filterSelectableAiModels,
   isSelectableAiModel,
-  LOCAL_AI_MODEL,
+  LOCAL_AI_MODEL, HW_AI_MODEL,
   normalizeAiSelection,
   llmFindBestPlay, decodeModelDecision,
 } from './llmAi';
@@ -38,7 +38,7 @@ test('DeepSeek exposes queried non-Pro models and rejects Pro models', () => {
   assert.deepEqual(normalizeAiSelection('deepseek', undefined), {
     provider: 'deepseek', model: 'deepseek-v4-flash',
   });
-  assert.deepEqual(DEFAULT_AI_SELECTION, { provider: 'local', model: LOCAL_AI_MODEL });
+  assert.deepEqual(DEFAULT_AI_SELECTION, { provider: 'fueternal', model: HW_AI_MODEL });
   assert.deepEqual(normalizeAiSelection(undefined, undefined), DEFAULT_AI_SELECTION);
   assert.deepEqual(normalizeAiSelection('local', undefined), { provider: 'local', model: LOCAL_AI_MODEL });
 });
@@ -61,6 +61,11 @@ test('Local only exposes and accepts Qwen3.8-27', () => {
     provider: 'local',
     model: '',
   });
+});
+
+test('HW provider accepts the discovered model and shares the Fueternal endpoint', () => {
+  assert.deepEqual(normalizeAiSelection('fueternal', undefined), { provider: 'fueternal', model: HW_AI_MODEL });
+  assert.deepEqual(filterSelectableAiModels('fueternal', [HW_AI_MODEL, LOCAL_AI_MODEL, 'HW-glm-5.3']), [HW_AI_MODEL]);
 });
 
 test('default Qwen request uses Fueternal credentials and disables thinking', async () => {
@@ -111,8 +116,8 @@ test('model failover precedes local rules and keeps only the successful plan', a
       { primary: 'invalid', backup: 'valid', calls: 2 },
       { primary: 'http', backup: 'valid', calls: 2 },
       { primary: 'timeout', backup: 'valid', calls: 2 },
-      { primary: 'invalid', backup: 'timeout', calls: 2 },
-      { primary: 'invalid', backup: 'invalid', calls: 2 },
+      { primary: 'invalid', backup: 'timeout', calls: 3 },
+      { primary: 'invalid', backup: 'invalid', calls: 3 },
       { primary: 'pass', backup: 'valid', calls: 1 },
       { primary: 'invalid', backup: 'valid', calls: 2, reverse: true },
     ]) {
@@ -135,13 +140,12 @@ test('model failover precedes local rules and keeps only the successful plan', a
       assert.equal(requests.length, scenario.calls, JSON.stringify(scenario));
       assert.equal(requests[0].model, primary.model);
       if (requests.length === 2) {
-        assert.equal(requests[1].model, scenario.reverse ? 'deepseek-flash' : LOCAL_AI_MODEL);
+        assert.equal(requests[1].model, HW_AI_MODEL);
         assert.equal(requests[1].messages[0].content, requests[0].messages[0].content);
         assert.deepEqual(JSON.parse(requests[1].messages[1].content.split('\n')[1]),
           JSON.parse(requests[0].messages[1].content.split('\n')[1]), 'same state, candidates and memory');
       }
-      const successful = scenario.primary === 'valid' || scenario.primary === 'pass'
-        || scenario.backup === 'valid';
+
       if (scenario.primary === 'pass') assert.ok(plan?.next, 'surviving hand gets a grounded continuation');
       else assert.equal(plan, undefined, 'a direct finish must not persist an invented continuation');
       if (scenario.primary === 'pass') assert.equal(result, null, 'valid PASS must not retry');
@@ -156,6 +160,29 @@ test('model failover precedes local rules and keeps only the successful plan', a
   }
 });
 
+
+test('default retries HW, Qwen and official DeepSeek in order', async t => {
+  const oldLocal = process.env.LOCAL_LLM_API_KEY, oldDeepseek = process.env.DEEPSEEK_API_KEY;
+  process.env.LOCAL_LLM_API_KEY = process.env.DEEPSEEK_API_KEY = 'test-only';
+  t.after(() => {
+    for (const [key, value] of [['LOCAL_LLM_API_KEY', oldLocal], ['DEEPSEEK_API_KEY', oldDeepseek]]) {
+      if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
+    }
+  });
+  const requests: Array<{ url: string; model: string }> = [];
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    requests.push({ url, model: body.model });
+    return requests.length < 3 ? new Response('', { status: 503 })
+      : Response.json({ choices: [{ message: { content: '{"action_id":0}' } }] });
+  });
+  const hand = [0, 1, 2].map(id => ({ id, rank: Rank.Five, suit: Suit.Spade }));
+  const result = await findSmartPlay(hand, null, true, Rank.Two);
+  assert.deepEqual(requests.map(r => r.model), [HW_AI_MODEL, LOCAL_AI_MODEL, normalizeAiSelection('deepseek', '').model]);
+  assert.ok(requests[0].url.includes('fueternal.com'));
+  assert.ok(requests[2].url.includes('api.deepseek.com'));
+  assert.equal(result?.cards.length, 3);
+});
 
 test('model failures are classified without treating missing actions as PASS', () => {
   const reply = (content: string, finish_reason = 'stop') => ({ choices: [{ finish_reason, message: { content } }] });

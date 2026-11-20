@@ -8,10 +8,11 @@ import { recordAiModelCall } from './aiTelemetry';
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const LOCAL_BASE_URL = 'https://fueternal.com/api/v1';
+export const HW_AI_MODEL = 'HW-deepseek-v4.1-flash-1017';
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
-  provider: 'local',
-  model: LOCAL_AI_MODEL,
+  provider: 'fueternal',
+  model: HW_AI_MODEL,
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
 // Keep room for complete JSON; this is a ceiling, not a target length.
@@ -118,7 +119,7 @@ function trimTrailingSlash(value: string): string {
 }
 
 function getProviderConfig(provider: AiProvider): ProviderConfig {
-  if (provider === 'local') {
+  if (provider === 'local' || provider === 'fueternal') {
     return {
       baseUrl: trimTrailingSlash(process.env.LOCAL_LLM_BASE_URL || LOCAL_BASE_URL),
       apiKey: process.env.LOCAL_LLM_API_KEY || process.env.FUETERNAL_API_KEY || '',
@@ -134,14 +135,14 @@ export function normalizeAiSelection(
   provider: unknown,
   model: unknown,
 ): AiModelSelection {
-  const normalizedProvider: AiProvider = provider === 'local' || provider === 'deepseek'
+  const normalizedProvider: AiProvider = provider === 'local' || provider === 'deepseek' || provider === 'fueternal'
     ? provider : DEFAULT_AI_SELECTION.provider;
   const candidate = typeof model === 'string' && /^[\w./:-]{1,120}$/.test(model.trim())
     ? model.trim()
     : '';
   const configuredDefault = normalizedProvider === 'deepseek'
     ? (process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash')
-    : LOCAL_AI_MODEL;
+    : normalizedProvider === 'fueternal' ? HW_AI_MODEL : LOCAL_AI_MODEL;
   const normalizedModel = isSelectableAiModel(normalizedProvider, candidate)
     ? candidate
     : !candidate && isSelectableAiModel(normalizedProvider, configuredDefault)
@@ -155,7 +156,7 @@ export function isSelectableAiModel(provider: AiProvider, model: string): boolea
   const modelId = model.trim();
   if (!modelId) return false;
   if (provider === 'deepseek') return !modelId.toLowerCase().includes('pro');
-  return modelId === LOCAL_AI_MODEL;
+  return modelId === (provider === 'fueternal' ? HW_AI_MODEL : LOCAL_AI_MODEL);
 }
 
 export function filterSelectableAiModels(provider: AiProvider, models: string[]): string[] {
@@ -495,7 +496,7 @@ goal必须是其中一项：${[...DECISION_GOALS].join('、')}。resource_use必
         ],
         max_tokens: normalizedSelection.provider === 'deepseek' ? DEEPSEEK_MAX_OUTPUT_TOKENS : 4096,
       };
-      if (normalizedSelection.provider === 'deepseek') {
+      if (normalizedSelection.provider === 'deepseek' || normalizedSelection.provider === 'fueternal') {
         requestBody.thinking = { type: 'disabled' };
         requestBody.response_format = { type: 'json_object' };
       } else {
