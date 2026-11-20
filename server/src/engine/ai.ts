@@ -832,6 +832,21 @@ export function findBestPlay(
   return proposed;
 }
 
+/** Preference order for the human hint UI: the rule-based AI's scoring applied
+ *  to the caller's candidate list without room context. The first entry is the
+ *  play the heuristic itself would choose; later entries walk progressively
+ *  weaker options. Every candidate stays in the list, including bombs. */
+export function orderHintPlays(
+  plays: CardPattern[],
+  hand: Card[],
+  currentLevel: number,
+  isFreePlay: boolean,
+  allPlays?: CardPattern[],
+): CardPattern[] {
+  if (plays.length === 0) return [];
+  return orderCandidates(plays, hand, currentLevel, isFreePlay, undefined, undefined, allPlays);
+}
+
 export function scorePass(
   hand: Card[], last: CardPattern | null, level: number, context: AiDecisionContext,
 ): number {

@@ -5,10 +5,10 @@ import {
 } from '../../../shared/types';
 import { createDeck, shuffleDeck, dealCards, sortCards, isJoker, effectiveRank } from '../engine/card';
 import { identifyPattern, isValidPlay, declarePatterns } from '../engine/patterns';
-import { canBeat, canFreePlay, isBombPattern } from '../engine/compare';
+import { canBeat, canFreePlay } from '../engine/compare';
 import { getTeam, getLevelDelta, canResistTribute, selectTributeCard, selectReturnTributeCard, isValidReturnTributeCard } from '../engine/rules';
 import type { AiDecisionTrace } from '../engine/ai';
-import { findSmartPlay, generateLegalPlays } from '../engine/ai';
+import { findSmartPlay, generateLegalPlays, orderHintPlays } from '../engine/ai';
 import type { AiDecisionContext, AiRecentAction, AiStrategyPlan, AiStrategyMemory } from '../engine/llmAi';
 import { DEFAULT_AI_SELECTION } from '../engine/llmAi';
 import { recordAiDecision } from '../engine/aiTelemetry';
@@ -257,7 +257,8 @@ export class GameRoom {
     if (playerIdx !== this.state.currentPlayerIndex) return [];
     const hand = this.hands.get(playerId) || [];
     const isFreePlay = canFreePlay(this.state.lastPlay, this.state.passCount);
-    let legalPlays = generateLegalPlays(hand, this.state.currentLevel);
+    const allPlays = generateLegalPlays(hand, this.state.currentLevel);
+    let legalPlays = allPlays;
     if (!isFreePlay && this.state.lastPlay) {
       legalPlays = legalPlays.filter(pattern =>
         canBeat(pattern, this.state!.lastPlay!, this.state!.currentLevel)
@@ -274,16 +275,9 @@ export class GameRoom {
     });
     if (legalPlays.length === 0) return [];
 
-    // Keep the cycle predictable: ordinary combinations first, bombs last;
-    // within the same type show the weaker/smaller play before stronger ones.
-    legalPlays.sort((a, b) => {
-      const bombDelta = Number(isBombPattern(a)) - Number(isBombPattern(b));
-      if (bombDelta !== 0) return bombDelta;
-      if (a.cards.length !== b.cards.length) return b.cards.length - a.cards.length;
-      if (a.type !== b.type) return a.type.localeCompare(b.type);
-      return effectiveRank(a.rank, this.state!.currentLevel)
-        - effectiveRank(b.rank, this.state!.currentLevel);
-    });
+    // Order the cycle by the rule-based AI's preference: the first hint is the
+    // heuristic's own play, later presses walk progressively weaker options.
+    legalPlays = orderHintPlays(legalPlays, hand, this.state.currentLevel, isFreePlay, allPlays);
 
     const selectionKey = [...currentCardIds].sort((a, b) => a - b).join(',');
     const currentIndex = legalPlays.findIndex(pattern =>
