@@ -6,7 +6,7 @@ import {
 import { canBeat, isBombPattern } from './compare';
 import { llmFindBestPlay, normalizeAiSelection, DEFAULT_AI_SELECTION, LOCAL_AI_MODEL, HW_AI_MODEL } from './llmAi';
 import type { AiDecisionContext, AiStrategyPlan } from './llmAi';
-import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, resourceCost, tailControlCost } from './aiAnalysis';
+import { analyzeDecision, analyzeEndgameRoutes, analysisKey, buildPublicKnowledge, buildTeamPlan, buildTeamRoutes, createTurnEstimator, forecastTrick, enforceReportedNextPlayerMaximum, passPosition, publicControlEvidence, rankBombChanges, resourceCost, tailControlCost } from './aiAnalysis';
 import type { DecisionAnalysis, SampleResult, TeamPlan, PublicKnowledge } from './aiAnalysis';
 
 export { enforceReportedNextPlayerMaximum, passPosition } from './aiAnalysis';
@@ -290,8 +290,7 @@ export function scorePlay(
   teamPlan?: TeamPlan,
 ): number {
   if (play.cards.length === hand.length) return 1_000_000;
-  const handCounts = getRankCounts(hand);
-  const playedCounts = getRankCounts(play.cards);
+
   const lastPlayer = context?.players.find(player => player.seatIndex === context.lastPlayPlayerIndex);
   const partnerLed = lastPlayer?.relation === 'partner';
   const opponentLed = lastPlayer?.relation === 'opponent';
@@ -319,11 +318,9 @@ export function scorePlay(
 
   // A card which belongs to a bomb/king bomb/flush straight or is a wildcard
   // has high option value. Penalise partial destruction, not playing it whole.
-  for (const [rank, selected] of playedCounts) {
-    const held = handCounts.get(rank)?.length || 0;
-    if (held >= 4 && selected.length < held) score -= 650;
-    // Ordinary group damage is measured from the remaining combinations in
-    // orderCandidates, rather than charging every split the same fixed price.
+  for (const bomb of rankBombChanges(hand, play)) {
+    if (bomb.playedAsBomb && !bomb.after) continue;
+    score -= 650;
   }
   // Attachments do not strengthen a full house. Price the control pair
   // separately from its triple rank, including declared wildcard substitutes.
@@ -954,9 +951,8 @@ function policyAction(play: CardPattern | null): string {
   return play ? `${play.type}:${play.rank}:${play.cards.length}` : 'PASS';
 }
 
-/** Finite cost for spending cards which normally provide a later recapture.
- * This is only compared between equally productive calm opening leads. */
-function openingControlCost(play: CardPattern, hand: Card[], level: number): number {
+/** Finite price for the control resources spent by a physical action. */
+function controlResourceCost(play: CardPattern, hand: Card[], level: number): number {
   const cost = resourceCost(hand, play, level);
   const bombCost = !isBombPattern(play) ? 0
     : play.type === PatternType.KingBomb ? 24
@@ -967,7 +963,7 @@ function openingControlCost(play: CardPattern, hand: Card[], level: number): num
       : isWildCard(card, level) ? 6
         : card.rank === level ? 4
           : card.rank === Rank.Ace ? 2 : 0), 0)
-    + cost.broken_natural_bombs.length * 8 + bombCost;
+    + cost.broken_natural_bombs.length * 8 + cost.weakened_natural_bombs.length * 3 + bombCost;
 }
 
 function canContestWithReadyExit(
@@ -1034,7 +1030,7 @@ export function enforceTeamStrategy(
       && ((player.relation === 'opponent' && player.cardCount <= 5)
         || (player.relation === 'partner' && player.cardCount <= 2)));
   if (opening || calmBombLead) {
-    const proposedCost = openingControlCost(proposed, hand, level);
+    const proposedCost = controlResourceCost(proposed, hand, level);
     const proposedAfter = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (proposedCost >= 4 && proposedAfter) {
       const protectedIds = isBombPattern(proposed)
@@ -1043,7 +1039,7 @@ export function enforceTeamStrategy(
         && (protectedIds || play.cards.length >= proposed!.cards.length)
         && (!protectedIds || play.cards.every(card => !protectedIds.has(card.id)))
         && !play.cards.some(card => isWildCard(card, level) || isJoker(card))
-        && openingControlCost(play, hand, level) <= proposedCost - 4;
+        && controlResourceCost(play, hand, level) <= proposedCost - 4;
       const alternatives = candidates.filter(play => conservesControl(play)
         && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined
         && analysis.candidates[analysisKey(play)].remainingTurns.turns <= proposedAfter.turns);
@@ -1080,13 +1076,37 @@ export function enforceTeamStrategy(
     && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
     && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'ready_exit');
   const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
-  if (!free && context && isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2
-    && !catchesOpponent
+  // The cost belongs to the actual remaining hand, whether the proposed
+  // response spends a bomb whole or consumes its cards as an ordinary group.
+  if (!free && last && context && analysis && !catchesOpponent
     && !context.players.some(player => player.finishRank === null
       && ((player.relation === 'opponent' && player.cardCount <= 5)
         || (player.relation === 'partner' && player.cardCount <= 2)))
     && opponentControlStreak(context) < 2
-    && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'bomb_structure');
+    && !materiallyBetterSimulation(proposed, null, analysis)) {
+    if (isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2) {
+      return changed(proposed, null, 'bomb_structure');
+    }
+    const remaining = analysis.candidates[analysisKey(proposed)]?.remainingTurns;
+    const forecast = analysis.trickForecast?.[analysisKey(proposed)];
+    const pass = analysis.trickForecast?.PASS;
+    const exitGain = forecast && pass && (forecast.allyExit - pass.allyExit + pass.enemyExit - forecast.enemyExit >= 0.5);
+    if (!isBombPattern(proposed) && resourceCost(hand, proposed, level).broken_natural_bombs.length
+      && !(remaining && remaining.turns <= 2) && !exitGain
+      && !publicControlEvidence(proposed, hand, level, context)?.unbeatable) {
+      const original = proposed;
+      const originalCost = controlResourceCost(original, hand, level);
+      const intact = candidates.filter(play => !isBombPattern(play)
+        && (!remaining?.exact || !analysis.candidates[analysisKey(play)]?.remainingTurns.exact
+          || analysis.candidates[analysisKey(play)].remainingTurns.turns <= remaining.turns)
+        && !resourceCost(hand, play, level).broken_natural_bombs.length
+        && controlResourceCost(play, hand, level) < originalCost
+        && !materiallyBetterSimulation(original, play, analysis));
+      const replacement = orderCandidates(intact, hand, level, false, context, analysis)[0];
+      if (!replacement) return changed(proposed, null, 'bomb_structure');
+      proposed = changed(proposed, replacement, 'bomb_structure')!;
+    }
+  }
   const reportAdjusted = enforceNextPlayerReport(proposed, candidates, level, context, hand);
   if (!reportAdjusted) return null;
   // Reported-count interception is a strong prior, not a legality rule.
@@ -1142,6 +1162,8 @@ export function enforceTeamStrategy(
     const lowerTurns = analysis?.candidates[analysisKey(lower)]?.remainingTurns;
     const proposedTurns = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (lowerTurns && proposedTurns && lowerTurns.turns > proposedTurns.turns) continue;
+    if (rankBombChanges(hand, lower).some(b => !b.playedAsBomb && b.after < 4)
+      && !rankBombChanges(hand, proposed).some(b => !b.playedAsBomb && b.after < 4)) continue;
     if (materiallyBetterSimulation(proposed, lower, analysis)
       || blocksReportedSingle(proposed, lower, hand, level, context)
       || (!free && publicControlEvidence(proposed, hand, level, context)?.unbeatable === true
@@ -1198,7 +1220,7 @@ export function finalizeAiDecision(
       return proof && (isBombPattern(play) ? !proof.bombPossible : proof.unbeatable);
     }) : [];
     const secureBlock = secureBlocks.sort((a, b) =>
-      openingControlCost(a, hand, level) - openingControlCost(b, hand, level))[0];
+      controlResourceCost(a, hand, level) - controlResourceCost(b, hand, level))[0];
     const ordinaryContest = leader.cardCount <= 12 && hand.length >= leader.cardCount + 3
       && [PatternType.Single, PatternType.Pair].includes(last.type);
     const partnerHead = context.players.some(player => player.relation === 'partner' && player.finishRank === 1);
@@ -1260,24 +1282,31 @@ export function finalizeAiDecision(
     && publicControlEvidence(selected, hand, level, context)?.unbeatable !== true
     && !analysis.candidates[analysisKey(selected)]?.endgameRoute?.controlProven) {
     const before = analysis.candidates[analysisKey(selected)];
+    const canPlanOwnExit = context && !context.players.some(p =>
+      p.relation !== 'self' && p.finishRank === null && p.cardCount <= 2);
+
     const cost = (play: CardPattern) => {
       const value = analysis.candidates[analysisKey(play)];
       return (value?.continuation?.tailControlCost || 0)
         + (value?.replyFinishRisk ? value.replyFinishRisk.rate * 240 : 0);
     };
-    if ((before?.continuation?.tailControlCost || 0) >= 160 && before?.remainingTurns.exact) {
+    const compareExit = canPlanOwnExit && before && !before.endgameRoute && before.remainingTurns.turns >= 2
+      && candidates.some(play => analysis.candidates[analysisKey(play)]?.endgameRoute?.sameShapeControl);
+    if (before?.remainingTurns.exact && (compareExit || (before.continuation?.tailControlCost || 0) >= 160)) {
       for (const alternative of orderCandidates(candidates, hand, level, free, context, analysis)) {
         const after = analysis.candidates[analysisKey(alternative)];
+        const route = after?.endgameRoute;
+        const betterExit = compareExit && route?.sameShapeControl && route.exit && route.exit.length > 1
+          && after.remainingTurns.turns <= before.remainingTurns.turns && cost(alternative) <= cost(selected);
         if (!after?.remainingTurns.exact || after.remainingTurns.turns > before.remainingTurns.turns + 1
-          || cost(selected) - cost(alternative) < 160
+          || (!betterExit && cost(selected) - cost(alternative) < 160)
           || (before.replyFinishRisk && (!after.replyFinishRisk
             || after.replyFinishRisk.rate > before.replyFinishRisk.rate))
           || materiallyBetterSimulation(selected, alternative, analysis)) continue;
         const guarded = guard(alternative);
         // A protection that changes this alternative invalidates the measured
         // continuation. Keep the original decision rather than mix two plans.
-        if (!guarded || analysisKey(guarded) !== analysisKey(alternative)
-          || cost(selected) - cost(guarded) < 160) continue;
+        if (!guarded || analysisKey(guarded) !== analysisKey(alternative)) continue;
         accepted = [...accepted, { rule: 'continuation', priority: AI_POLICY_PRIORITY.continuation,
           from: policyAction(selected), to: policyAction(alternative) }, ...recent];
         selected = guarded;
@@ -1332,6 +1361,8 @@ export interface AiDecisionTrace {
   corrected: boolean;
   corrections?: AiPolicyCorrection[];
   trickSamples?: number;
+  rankBombChanges?: ReturnType<typeof rankBombChanges>;
+  remainingTurns?: DecisionAnalysis['handTurns'];
 }
 
 export interface DecisionOptions {
@@ -1432,6 +1463,10 @@ export async function findSmartPlay(
   const routeGoals = (play: CardPattern | null) => (analysis.teamRoutes || [])
     .filter(route => route.actionKey === (play ? analysisKey(play) : null)).map(route => route.goal);
   const key = (p: CardPattern | null) => p ? analysisKey(p) : 'PASS';
+  const executedEvidence = (play: CardPattern | null) => ({
+    rankBombChanges: play ? rankBombChanges(hand, play) : undefined,
+    remainingTurns: play ? analysis.candidates[key(play)]?.remainingTurns : analysis.handTurns,
+  });
   const finalize = (play: CardPattern | null) => finalizeAiDecision(play, legalPlays, hand, lastPattern,
     isFreePlay, currentLevel, context, analysis, ruleResult, notes => { corrections = notes; },
     isFreePlay ? allPlays : undefined);
@@ -1445,7 +1480,7 @@ export async function findSmartPlay(
   const value = (p: CardPattern | null) => {
     const turns = p ? analysis.candidates[key(p)]?.remainingTurns.turns : analysis.handTurns.turns;
     if (turns === undefined) return -Infinity;
-    return teamProspect(p) - 0.6 * turns - (p ? 0.1 * openingControlCost(p, hand, currentLevel) : 0);
+    return teamProspect(p) - 0.6 * turns - (p ? 0.1 * controlResourceCost(p, hand, currentLevel) : 0);
   };
   // A one-cycle model is strongest on observable near-term consequences.
   // Changing only the predicted trick leader is insufficient evidence to
@@ -1456,7 +1491,7 @@ export async function findSmartPlay(
     if (b.allyExit - a.allyExit + a.enemyExit - b.enemyExit >= 0.5) return true;
     const remaining = (p: CardPattern | null) => p ? analysis.candidates[key(p)]?.remainingTurns : analysis.handTurns;
     const left = remaining(before), right = remaining(after);
-    const cost = (p: CardPattern | null) => p ? openingControlCost(p, hand, currentLevel) : 0;
+    const cost = (p: CardPattern | null) => p ? controlResourceCost(p, hand, currentLevel) : 0;
     return !!left?.exact && !!right?.exact && right.turns <= left.turns && cost(after) <= cost(before)
       && b.teamAhead === 1 && a.teamAhead <= 0.25 && b.enemyExit <= a.enemyExit;
   };
@@ -1500,7 +1535,7 @@ export async function findSmartPlay(
     const localTurns = local && analysis.candidates[key(local)]?.remainingTurns;
     const modelTurns = entry?.remainingTurns;
     const savedControl = local && modelPlay
-      ? openingControlCost(modelPlay, hand, currentLevel) - openingControlCost(local, hand, currentLevel) : 0;
+      ? controlResourceCost(modelPlay, hand, currentLevel) - controlResourceCost(local, hand, currentLevel) : 0;
     const betterPartition = localTurns?.exact && modelTurns?.exact && localTurns.turns < modelTurns.turns && savedControl >= 0;
     // In a quiet lead, an expensive extra turn needs a concrete tactical purpose.
     if (betterPartition && modelPlay && isFreePlay && savedControl > 0
@@ -1552,7 +1587,7 @@ export async function findSmartPlay(
         // model omitted a plan. Model prose is never evidence of retained cards.
         const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
         if (grounded) onPlan?.(grounded);
-        onDecision?.({ source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
+        onDecision?.({ ...executedEvidence(final), source: model === primary ? 'primary' : 'backup', model: model.model, routes: routeGoals(final), corrections,
           trickSamples: analysis.trickForecast?.[key(final)]?.samples,
           corrected: (final ? analysisKey(final) : 'PASS') !== (llmResult ? analysisKey(llmResult) : 'PASS') });
         return final;
@@ -1564,7 +1599,7 @@ export async function findSmartPlay(
   corrections = localNotes;
   const grounded = groundStrategyPlan(hand, allPlays, final, analysis);
   if (grounded) onPlan?.(grounded);
-  onDecision?.({ source: 'local', routes: routeGoals(final), corrections,
+  onDecision?.({ ...executedEvidence(final), source: 'local', routes: routeGoals(final), corrections,
     trickSamples: analysis.trickForecast?.[key(final)]?.samples, corrected:
     (final ? analysisKey(final) : 'PASS') !== (fallbackResult ? analysisKey(fallbackResult) : 'PASS') });
   return final;

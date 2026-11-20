@@ -1443,3 +1443,54 @@ test('calm midgame lead can find a bomb-preserving singleton outside the model s
   assert.equal(selected?.type, PatternType.Single);
   assert.equal(selected?.rank, Rank.Seven);
 });
+
+test('cost of a follow distinguishes losing a rank bomb, retaining four, and playing the bomb', async () => {
+  const deck = createDeck();
+  for (const level of [Rank.Three, Rank.King]) {
+    const group = deck.filter(c => c.rank === level && c.suit !== Suit.Heart);
+    const rest = [...deck.filter(c => c.rank === 4).slice(0, 2),
+      ...[5, 7, 9, 11, 14, 16].map(rank => deck.find(c => c.rank === rank)!)];
+    const hand = [...group.slice(0, 4), ...rest];
+    const options = generateLegalPlays(hand, level);
+    const house = options.find(p => p.type === PatternType.TriplePair && p.rank === level)!;
+    const bomb = options.find(p => p.type === PatternType.Bomb4 && p.rank === level)!;
+    const single = options.find(p => p.type === PatternType.Single && p.rank === level)!;
+    assert.deepEqual(resourceCost(hand, house, level).broken_natural_bombs, [level]);
+    assert.deepEqual(resourceCost(hand, bomb, level).broken_natural_bombs, []);
+    const weakened = resourceCost([...hand, group[4]], single, level);
+    assert.deepEqual(weakened.broken_natural_bombs, []);
+    assert.deepEqual(weakened.remaining_rank_bombs, [{ rank: level, count: 4 }]);
+    const ctx = contextFor([hand, [], [], []]);
+    ctx.players.forEach(p => { if (p.relation !== 'self') p.cardCount = 18; });
+    ctx.lastPlayPlayerIndex = 1;
+    ctx.actionHistory = undefined;
+    ctx.recentActions = [];
+    const last = { ...house, rank: Rank.Queen, cards: [] };
+    const replies = [house, bomb];
+    const analysis = await analyzeDecision(hand, options, replies, last, level, undefined, findBestPlay);
+    assert.equal(finalizeAiDecision(house, replies, hand, last, false, level, ctx, analysis), null);
+    ctx.players[1].cardCount = 1;
+    assert.ok(finalizeAiDecision(house, replies, hand, last, false, level, ctx, analysis));
+  }
+});
+
+test('a same-strength unseen control makes a grouped-exit probe conditional', async () => {
+  const deck = createDeck();
+  const take = (rank: Rank, n: number) => deck.filter(c => c.rank === rank).slice(0, n);
+  const hand = [...take(5, 3), ...take(8, 2), ...take(9, 1), ...take(Rank.Ace, 1)];
+  // No higher ordinary card remains. Another ace can take the lead first.
+  const unseen = [3, 4, 6, 7, 10, 11, 13].flatMap(rank => take(rank, 2));
+  unseen.push(deck.filter(c => c.rank === Rank.Ace)[1]);
+  const ctx = contextFor([hand, unseen.slice(0, 5), unseen.slice(5, 10), unseen.slice(10)]);
+  const all = generateLegalPlays(hand, Rank.Two);
+  const ace = all.find(p => p.type === PatternType.Single && p.rank === Rank.Ace)!;
+  assert.equal(publicControlEvidence(ace, hand, Rank.Two, ctx)?.unbeatable, true);
+  const probe = all.find(p => p.type === PatternType.Single && p.rank === 9)!;
+  const house = all.find(p => p.type === PatternType.TriplePair)!;
+  const analysis = await analyzeDecision(hand, all, all, null, Rank.Two, ctx, findBestPlay, { maxSamples: 0 });
+  const route = analysis.candidates[analysisKey(probe)].endgameRoute!;
+  assert.equal(route.sameShapeControl, true);
+  assert.equal(route.controlProven, false);
+  assert.equal(route.exit?.type, PatternType.TriplePair);
+  assert.equal(finalizeAiDecision(house, all, hand, null, true, Rank.Two, ctx, analysis)?.rank, probe.rank);
+});

@@ -62,15 +62,26 @@ export function enforceReportedNextPlayerMaximum(
     canBeat(play, strongest, level) ? play : strongest, proposed);
 }
 
+/** A same-rank bomb can be played as dealt, including hearts at their printed
+ * level. Substituted ranks never enter the inventory of physical cards. */
+export function rankBombChanges(hand: Card[], play: CardPattern) {
+  const held = rankCounts(hand);
+  const spent = rankCounts(play.cards);
+  return [...held].filter(([rank, count]) => rank <= Rank.Ace && count >= 4 && spent.has(rank))
+    .map(([rank, before]) => ({ rank, before, after: before - spent.get(rank)!,
+      playedAsBomb: play.type.startsWith('bomb') && play.rank === rank }));
+}
+
 export function resourceCost(hand: Card[], play: CardPattern, level: number) {
   const used = new Set(play.cards.map(c => c.id));
   const remaining = hand.filter(c => !used.has(c.id));
-  const held = rankCounts(hand.filter(c => !(c.rank === level && c.suit === Suit.Heart)));
-  const rest = rankCounts(remaining.filter(c => !(c.rank === level && c.suit === Suit.Heart)));
+  const changes = rankBombChanges(hand, play);
   const counts = rankCounts(remaining);
   return {
-    broken_natural_bombs: [...held].filter(([rank,n]) => n >= 4 && (rest.get(rank) || 0) > 0
-      && (rest.get(rank) || 0) < n).map(([rank]) => rank),
+    broken_natural_bombs: changes.filter(b => !b.playedAsBomb && b.after < 4).map(b => b.rank),
+    weakened_natural_bombs: changes.filter(b => b.after >= 4).map(b => b.rank),
+    remaining_rank_bombs: [...counts].filter(([rank, n]) => rank <= Rank.Ace && n >= 4)
+      .map(([rank, count]) => ({ rank, count })),
     remaining_low_singletons: remaining.filter(c => effectiveRank(c.rank, level) < Rank.Queen
       && counts.get(c.rank) === 1).length,
     remaining_high_cards: remaining.filter(c => effectiveRank(c.rank, level) >= effectiveRank(Rank.Ace, level)).length,
@@ -225,6 +236,7 @@ export interface EndgameRoute {
   recapture?: { type: PatternType; rank: Rank; length: number };
   exit?: { type: PatternType; rank: Rank; length: number };
   controlProven: boolean;
+  sameShapeControl: boolean;
   score: number;
   caveat: string;
 }
@@ -241,15 +253,15 @@ export function analyzeEndgameRoutes(
   const full = (1 << hand.length) - 1;
   const controls = allPlays.filter(play => [PatternType.Single, PatternType.Pair].includes(play.type)
     && effectiveRank(play.rank, level) >= effectiveRank(Rank.Ace, level));
-  const proven = new Map(controls.map(play => [play, publicControlEvidence(play, hand, level, context)?.unbeatable === true]));
+  const evidence = new Map(controls.map(play => [play, publicControlEvidence(play, hand, level, context)]));
   const shape = (play: CardPattern) => ({ type: play.type, rank: play.rank, length: play.length });
   const routes: Record<string, EndgameRoute> = {};
   for (const play of allPlays) {
     const mask = maskOf(play);
     const exit = byMask.get(full ^ mask);
-    if (exit && controls.includes(play) && proven.get(play)) {
+    if (exit && evidence.get(play)?.unbeatable) {
       routes[analysisKey(play)] = { intent: 'control_then_finish', exit: shape(exit),
-        controlProven: true, score: 700, caveat: '公开未见牌无法压制控制张，获牌权后余牌可一手走完' };
+        controlProven: true, sameShapeControl: true, score: 700, caveat: '公开未见牌无法压制控制张，获牌权后余牌可一手走完' };
     }
     // Never probe in a shape that may let an opponent finish immediately.
     if (context?.players.some(p => p.relation === 'opponent' && p.finishRank === null
@@ -260,12 +272,15 @@ export function analyzeEndgameRoutes(
       const tailMask = full ^ mask ^ controlMask;
       const tail = byMask.get(tailMask);
       if (tailMask !== 0 && !tail) continue;
-      const certain = proven.get(control) === true;
+      const proof = evidence.get(control);
+      // An equal control can answer the probe first, even though it cannot
+      // beat our control once led. A guaranteed recapture rules out ties too.
+      const certain = proof?.unbeatable === true && !proof.equalShapePossible;
       const route: EndgameRoute = { intent: 'probe_then_recapture', recapture: shape(control),
-        exit: tail ? shape(tail) : undefined, controlProven: certain,
-        score: certain ? 600 : 180,
+        exit: tail ? shape(tail) : undefined, controlProven: certain, sameShapeControl: proof?.ordinaryResponsePossible === false,
+        score: certain ? 600 : proof?.ordinaryResponsePossible === false ? 200 : 180,
         caveat: certain ? '先试探；如被接，用保留的控制张回手，再走尾牌'
-          : '仅为试探路线；控制张仍可能被更大牌或炸弹压制' };
+          : '仅为试探路线；对手先接同级或更大牌、或用炸弹，都可能使回手失败' };
       const key = analysisKey(play);
       if (!routes[key] || route.score > routes[key].score) routes[key] = route;
     }
@@ -422,6 +437,8 @@ export interface PublicControlEvidence {
   unbeatable: boolean;
   /** Conservative: cards are pooled across opponents, so true is possibility, not ownership proof. */
   bombPossible: boolean;
+  ordinaryResponsePossible: boolean;
+  equalShapePossible: boolean;
 }
 
 const publicControlCache = new WeakMap<AiDecisionContext, Map<string, PublicControlEvidence | null>>();
@@ -498,7 +515,10 @@ export function publicControlEvidence(
     // a complete declaration feasibility proof before they can be certified.
     ordinaryResponse = true;
   }
-  const evidence = { unbeatable: (!ordinaryResponse || play.length > maxReplyCards) && !bombPossible, bombPossible };
+  const ordinaryResponsePossible = ordinaryResponse && play.length <= maxReplyCards;
+  const equalShapePossible = play.length <= maxReplyCards && (play.type === PatternType.Single
+    ? (counts.get(play.rank) || 0) > 0 : play.type === PatternType.Pair && canMake(play.rank, 2));
+  const evidence = { unbeatable: !ordinaryResponsePossible && !bombPossible, bombPossible, ordinaryResponsePossible, equalShapePossible };
   contextCache.set(cacheKey, evidence);
   return evidence;
 }

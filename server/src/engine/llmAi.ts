@@ -240,14 +240,15 @@ function describeHistory(context?: AiDecisionContext): string {
 function describeActionCost(option: CardPattern, hand: Card[], currentLevel: number, held: Map<number, number>) {
   const used = new Map<number, number>();
   for (const card of option.cards) used.set(card.rank, (used.get(card.rank) || 0) + 1);
+  const resources = resourceCost(hand, option, currentLevel);
   return {
     remaining_cards: hand.length - option.cards.length,
-    ...resourceCost(hand, option, currentLevel),
+    ...resources,
     uses_wildcards: option.cards.filter(card => card.rank === currentLevel && card.suit === 'H').length,
     uses_jokers: option.cards.filter(card => card.rank >= Rank.SmallJoker).length,
     uses_aces: option.cards.filter(card => card.rank === Rank.Ace).length,
     uses_bomb: isBombPattern(option),
-    breaks_bomb: [...used].some(([rank, count]) => (held.get(rank) || 0) >= 4 && count < (held.get(rank) || 0)),
+    breaks_bomb: resources.broken_natural_bombs.length > 0,
     splits_group: [...used].some(([rank, count]) => (held.get(rank) || 0) > count),
   };
 }
@@ -257,7 +258,7 @@ function spendsControlResource(option: CardPattern, hand: Card[], currentLevel: 
   for (const card of hand) held.set(card.rank, (held.get(card.rank) || 0) + 1);
   const cost = describeActionCost(option, hand, currentLevel, held);
   return cost.uses_wildcards > 0 || cost.uses_jokers > 0 || cost.uses_aces > 0
-    || cost.natural_level_cards_spent > 0 || cost.breaks_bomb || cost.uses_bomb;
+    || cost.natural_level_cards_spent > 0 || cost.breaks_bomb || cost.weakened_natural_bombs.length > 0 || cost.uses_bomb;
 }
 
 function compactActionGroups(
@@ -351,7 +352,7 @@ ${STRATEGY_GUIDE}
 证据口径：remainingTurns是静态拆分，exact不表示必胜；controlProven才是公开信息的控牌证明。replyFinishRisk是公开信息约束抽样中对手可一手接完的比例，不是实际胜率，也未保证对手轮到时牌权不变。比较continuation.tailControlCost和真实余牌，级牌单张不等于保留了双王回手。模拟样本不足或接近时不臆造胜率。
 strategy_memory每回合重验；以当前手牌、verified_resources和strategy_framework为准，不得声称持有不存在的牌。策略指南提供比较方法，不替代平台的合法性与防守检查。decision_check必须填写。按所选动作的cost核对资源；消耗A、王、自然级牌、逢人配、拆炸或uses_bomb为true时，resource_use必须为spend_justified。
 下家报单/双时比较最大普通牌与完整炸弹，避免为出最大对子拆开炸弹；两张不保证是对子。此原则不强制选某牌型或取消PASS。接管送队友必须保留实际可出的nextLead；controlProven=false不保证拿到牌权。跟牌通常保留更强控制；允许合理拆组、用王回手与炸弹拦截。
-after_pass.responders是过牌后仍能应牌的座位；partnerMayRespond=false时不能指望队友接，nextLead是无人再压时的领牌人。对手已拿头游时要比较放其队友续领造成双上的代价。声称减手须核对remainingTurns与hand_turns。
+after_pass.responders是过牌后仍能应牌的座位；partnerMayRespond=false时不能指望队友接，nextLead是无人再压时的领牌人。对手已拿头游时要比较放其队友续领造成双上的代价。核对 remaining_rank_bombs 才能声称留炸。拆炸跟牌要与 PASS 和完整接牌比较具体收益。remainingTurns 是该动作之后的余牌手数，exact=false 是上界；残局比较先出整组和保留整组、用同型控制回手的顺序。
 next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他座位各应一次后本方占先比例，partnerAhead是队友占先比例，allyExit、enemyExit是这一圈先有人走完的比例。这是短程估计，结合余牌手数与保留控制比较。
 从legal_actions返回action_id（跟牌可PASS），decision_check执行固定自检，strategy_plan写本次执行后的下一步及失效条件。不复述长推理，不声称持有输入没有的炸弹或直接走完。`;
 
@@ -403,8 +404,8 @@ next_cycle与pass_next_cycle用同一批可能底牌估计：teamAhead是其他�
       aces: hand.filter(c => c.rank === Rank.Ace).length,
       natural_level_cards: hand.filter(c => c.rank === currentLevel && c.suit !== 'H').length,
       wildcards: hand.filter(c => c.rank === currentLevel && c.suit === 'H').length,
-      natural_bombs: [...new Set(hand.map(c => c.rank))].filter(rank =>
-        rank < Rank.SmallJoker && hand.filter(c => c.rank === rank && !(c.rank === currentLevel && c.suit === 'H')).length >= 4),
+      rank_bombs_as_dealt: [...new Set(hand.map(c => c.rank))].filter(rank =>
+        rank < Rank.SmallJoker && hand.filter(c => c.rank === rank).length >= 4),
     },
     wildcards: hand
       .filter(card => card.rank === currentLevel && card.suit === 'H')
