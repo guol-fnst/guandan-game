@@ -954,7 +954,7 @@ function blocksReportedSingle(
 export const AI_POLICY_PRIORITY = {
   finish: 1000, opening_resource: 900, ready_exit: 800, bomb_structure: 790,
   reported_defence: 780, partner_cooperation: 770, proven_control: 760,
-  economy: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_lead: 60, two_tricks: 45, two_trick_position: 45, team_baseline: 45, last_defender: 780,
+  economy: 100, control_spend: 100, continuation: 90, urgent_interception: 780, deny_double_win: 780, paired_outcome: 50, team_trick: 45, team_lead: 60, two_tricks: 45, two_trick_position: 45, team_baseline: 45, last_defender: 780,
 } as const;
 export interface AiPolicyCorrection {
   rule: keyof typeof AI_POLICY_PRIORITY;
@@ -1045,16 +1045,23 @@ export function enforceTeamStrategy(
       && ((player.relation === 'opponent' && player.cardCount <= 5)
         || (player.relation === 'partner' && player.cardCount <= 2)));
   if (opening || calmBombLead) {
-    const proposedCost = controlResourceCost(proposed, hand, level);
+    // An intact high triple is a future response even when it contains no ace,
+    // level card or joker. A shorter lead may be equally quick over the hand.
+    const highTriple = (p: CardPattern) => (p.type === PatternType.Triple || p.type === PatternType.TriplePair)
+      && effectiveRank(p.rank, level) >= Rank.Queen;
+    const leadCost = (p: CardPattern) => controlResourceCost(p, hand, level) + (opening && highTriple(p) ? 4 : 0);
+    const proposedCost = leadCost(proposed);
     const proposedAfter = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
     if (proposedCost >= 4 && proposedAfter) {
       const protectedIds = isBombPattern(proposed)
         ? new Set(proposed.cards.map(card => card.id)) : undefined;
       const conservesControl = (play: CardPattern) => !isBombPattern(play)
-        && (protectedIds || play.cards.length >= proposed!.cards.length)
+        && (protectedIds || play.cards.length >= proposed!.cards.length
+          || (highTriple(proposed!) && play.cards.every(c => c.rank !== proposed!.rank
+            && hand.filter(held => held.rank === c.rank).length === play.cards.filter(used => used.rank === c.rank).length)))
         && (!protectedIds || play.cards.every(card => !protectedIds.has(card.id)))
         && !play.cards.some(card => isWildCard(card, level) || isJoker(card))
-        && controlResourceCost(play, hand, level) <= proposedCost - 4;
+        && leadCost(play) <= proposedCost - 4;
       const alternatives = candidates.filter(play => conservesControl(play)
         && analysis?.candidates[analysisKey(play)]?.remainingTurns.turns !== undefined
         && analysis.candidates[analysisKey(play)].remainingTurns.turns <= proposedAfter.turns);
@@ -1090,14 +1097,42 @@ export function enforceTeamStrategy(
     && !canContestWithReadyExit(proposed, level, context, analysis)
     && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
     && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'ready_exit');
-  const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
+  // In a quiet contest only the right to lead is at stake. A big reply
+  // followed by a long, fragmented hand is not itself a finishing route.
+  const afterReply = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
+  if (!free && last && context && analysis && leader?.relation === 'opponent' && leader.finishRank === null
+    && context.players.every(p => p.finishRank === null && p.cardCount > 5)
+    && leader.cardCount > 10 && opponentControlStreak(context) < 2 && afterReply && afterReply.turns >= 4
+    && (isBombPattern(proposed) || proposed.cards.some(c => isJoker(c) || isWildCard(c, level))
+      || proposed.cards.filter(c => c.rank === level).length >= 2)
+    && !materiallyBetterSimulation(proposed, null, analysis)) {
+    const original = proposed;
+    const price = controlResourceCost(original, hand, level);
+    const ordinary = candidates.filter(p => !isBombPattern(p) && canBeat(p, last, level)
+      && controlResourceCost(p, hand, level) < price
+      && p.cards.every(c => c.rank !== level && !isJoker(c)
+        && hand.filter(held => held.rank === c.rank).length === p.cards.filter(used => used.rank === c.rank).length)
+      && (analysis.candidates[analysisKey(p)]?.remainingTurns.turns ?? Infinity) <= analysis.handTurns.turns
+      && !materiallyBetterSimulation(original, p, analysis));
+    const cheaper = orderCandidates(ordinary, hand, level, false, context, analysis)[0];
+    // A compact attacking hand, or several reserve bombs, can justify taking the lead.
+    // A loose joker over a level single can also be our only ordinary takeover.
+    const reserves = resourceCost(hand, original, level).remaining_rank_bombs.length;
+    const reserveAttack = isBombPattern(original) && (afterReply.turns <= 4
+      || (afterReply.turns <= 5 && reserves >= 2));
+    const beatsLevel = last.type === PatternType.Single && last.rank === level && original.type === PatternType.Single;
+    if (cheaper) proposed = changed(original, cheaper, 'control_spend')!;
+    else if (!reserveAttack && !beatsLevel) return changed(original, null, 'control_spend');
+  }
   // The cost belongs to the actual remaining hand, whether the proposed
   // response spends a bomb whole or consumes its cards as an ordinary group.
+  const continuation = analysis?.candidates[analysisKey(proposed)]?.continuation;
   if (!free && last && context && analysis && !catchesOpponent
     && !context.players.some(player => player.finishRank === null
       && ((player.relation === 'opponent' && player.cardCount <= 5)
         || (player.relation === 'partner' && player.cardCount <= 2)))
-    && opponentControlStreak(context) < 2
+    && (opponentControlStreak(context) < 2 || (leader?.relation === 'opponent' && leader.cardCount > 10
+      && !isBombPattern(proposed) && analysis.candidates[analysisKey(proposed)]?.remainingTurns.turns >= 4))
     && !materiallyBetterSimulation(proposed, null, analysis)) {
     if (isBombPattern(proposed) && continuation?.exact && continuation.extraTurns >= 2) {
       return changed(proposed, null, 'bomb_structure');
@@ -1176,6 +1211,10 @@ export function enforceTeamStrategy(
     if (lower === proposed) break;
     const lowerTurns = analysis?.candidates[analysisKey(lower)]?.remainingTurns;
     const proposedTurns = analysis?.candidates[analysisKey(proposed)]?.remainingTurns;
+    // Changing the wings never raises a full house's strength. The economy
+    // rule must not upgrade a cheap attachment to jokers, wildcards or a bomb.
+    if (lower.type === PatternType.TriplePair
+      && controlResourceCost(lower, hand, level) > controlResourceCost(proposed, hand, level)) continue;
     if (lowerTurns && proposedTurns && lowerTurns.turns > proposedTurns.turns) continue;
     if (rankBombChanges(hand, lower).some(b => !b.playedAsBomb && b.after < 4)
       && !rankBombChanges(hand, proposed).some(b => !b.playedAsBomb && b.after < 4)) continue;

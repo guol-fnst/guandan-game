@@ -1550,6 +1550,38 @@ test('equal-turn team leads send a partner out but respect an intervening finish
   }
 });
 
+test('quiet follow spends an ordinary single before a six-card bomb, but can still block a finisher', async () => {
+  const deck = createDeck();
+  const hand = [54, 0, 13, 80, 93, 39, 8, 21, 53, 28, 48, 78, 12].map(id => deck[id]);
+  const level = Rank.Five, all = generateLegalPlays(hand, level);
+  const bomb = all.find(p => p.type === PatternType.Bomb6)!;
+  const jack = all.find(p => p.type === PatternType.Single && p.rank === Rank.Jack)!;
+  const last = { ...jack, rank: Rank.Eight };
+  const replies = [bomb, jack];
+  const analysis = await analyzeDecision(hand, all, replies, last, level, undefined, findBestPlay);
+  const ctx = contextFor([hand, [], [], []]);
+  ctx.actionHistory = []; ctx.recentActions = []; ctx.lastPlayPlayerIndex = 1;
+  for (const p of ctx.players.slice(1)) p.cardCount = 16;
+  assert.equal(enforceTeamStrategy(bomb, replies, hand, last, false, level, ctx, analysis), jack);
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, level, ctx, analysis), null);
+  ctx.players[1].cardCount = 1;
+  assert.equal(enforceTeamStrategy(bomb, [bomb], hand, last, false, level, ctx, analysis), bomb);
+});
+
+test('full house economy cannot spend paired jokers to improve the residual partition', async () => {
+  const deck = createDeck();
+  const hand = [33, 100, 46, 106, 52, 9, 107, 42, 68, 27, 40, 84, 104, 103, 47, 45, 44].map(id => deck[id]);
+  const level = Rank.Nine, all = generateLegalPlays(hand, level);
+  const house = all.filter(p => p.type === PatternType.TriplePair && p.rank === 9);
+  const cheap = house.find(p => p.cards.filter(c => c.rank === 3).length === 2)!;
+  const jokerWings = house.find(p => p.cards.filter(c => c.rank === Rank.SmallJoker).length === 2)!;
+  const last = { ...cheap, rank: Rank.Five };
+  const ctx = contextFor([hand, [], [], []]);
+  ctx.lastPlayPlayerIndex = 1;
+  const analysis = await analyzeDecision(hand, all, [cheap, jokerWings], last, level, undefined, findBestPlay);
+  assert.equal(enforceTeamStrategy(cheap, [cheap, jokerWings], hand, last, false, level, ctx, analysis), cheap);
+});
+
 test('paired nonterminal leaves compare actual exits, control and the next free lead', async () => {
   const deck = createDeck();
   const hand = [deck.find(c => c.rank === 3)!, deck.find(c => c.rank === 4)!,
