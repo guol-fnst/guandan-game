@@ -1331,27 +1331,27 @@ export function finalizeAiDecision(
   }
   // Between equally fast exits, prefer a genuine chance for the partner to
   // finish. Check the intervening seats before giving up a safe lead.
-  if (free && selected && context && analysis.trickForecast
-    && context.players.some(p => p.relation === 'partner' && p.finishRank === null && p.cardCount <= 5)) {
+  if (free && selected && context && analysis.teamLeadForecast
+    && analysis.simulation.status === 'all_deals_policy_rollout') {
     const originalLead = selected;
     const baseKey = analysisKey(selected);
     const base = analysis.candidates[baseKey];
-    const first = analysis.trickForecast[baseKey];
+    const first = analysis.teamLeadForecast[baseKey];
     const price = controlResourceCost(selected, hand, level);
-    if (base?.remainingTurns.exact && first && (first.allDeals || first.samples >= 8)
+    if (base?.remainingTurns.exact && base.simulation && first?.allDeals && base.simulation.samples === first.samples
       && !base.endgameRoute?.controlProven && !publicControlEvidence(selected, hand, level, context)?.unbeatable) {
       let bestGain = 0;
       for (const alternative of candidates) {
-        const key = analysisKey(alternative), after = analysis.candidates[key], next = analysis.trickForecast[key];
-        if (!next || next.samples !== first.samples || !after?.remainingTurns.exact
+        const key = analysisKey(alternative);
+        const after = analysis.candidates[key];
+        const next = analysis.teamLeadForecast[key];
+        if (!next?.allDeals || next.samples !== first.samples || !after?.remainingTurns.exact
           || after.remainingTurns.turns > base.remainingTurns.turns || next.enemyExit > first.enemyExit
           || next.allyExit < first.allyExit || controlResourceCost(alternative, hand, level) > price) continue;
         const gain = next.allyExit - first.allyExit + first.enemyExit - next.enemyExit;
-        if (gain <= bestGain || (!next.allDeals && (gain < 0.25 || context.players.some(p =>
-          p.relation === 'opponent' && p.finishRank === null && p.cardCount === alternative.length)))
-          || reliablyBetterSimulation(base.simulation, after.simulation)
-          || (analysis.simulation.status === 'all_deals_policy_rollout' && base.simulation && after.simulation
-            && base.simulation.meanReward > after.simulation.meanReward + 1e-9)) continue;
+        if (gain <= bestGain || !after.simulation || base.simulation.samples !== after.simulation.samples
+          || after.simulation.winRate < base.simulation.winRate || after.simulation.doubleWinRate < base.simulation.doubleWinRate
+          || after.simulation.meanReward + 1e-9 < base.simulation.meanReward) continue;
         const guarded = guard(alternative);
         if (guarded && analysisKey(guarded) === key) {
           selected = guarded;
@@ -1404,7 +1404,7 @@ export function groundStrategyPlan(
 
 export interface AiDecisionTrace {
   source: 'primary' | 'backup' | 'local' | 'forced';
-  divergence?: { baseline: string; prepared?: string; proposal?: string; final: string };
+  divergence?: { initialLocal?: string; baseline: string; prepared?: string; proposal?: string; final: string };
   routes?: string[];
   model?: string;
   corrected: boolean;
@@ -1505,9 +1505,15 @@ export async function findSmartPlay(
     hand, allPlays, legalPlays, isFreePlay ? null : lastPattern,
     currentLevel, context, findBestPlay, { generateReplies: generateLegalPlays },
   );
-  if (context && (analysis.simulation.samples < 8 || (isFreePlay && analysis.teamRoutes?.some(r => r.goal === 'feed_partner')))) {
+  if (context && analysis.simulation.samples < 8) {
     analysis.trickForecast = largeDeal ? earlyForecast : forecastTrick(hand, legalPlays, isFreePlay ? null : lastPattern,
       currentLevel, context, generateLegalPlays, performance.now() + 150);
+  }
+  if (context && isFreePlay && analysis.simulation.status === 'all_deals_policy_rollout'
+    && analysis.teamRoutes?.some(route => route.goal === 'feed_partner')) {
+    // Keep the tactical tie-break independent of the general one-cycle forecast.
+    analysis.teamLeadForecast = forecastTrick(hand, legalPlays, null, currentLevel, context,
+      generateLegalPlays, performance.now() + 50, Math.random, true);
   }
   legalPlays = orderCandidates(legalPlays, hand, currentLevel, isFreePlay, context, analysis, allPlays);
   equivalentCounts = legalPlays.map(play => equivalentCountByPlay.get(play) || 1);
@@ -1633,8 +1639,9 @@ export async function findSmartPlay(
   const divergence = (final: CardPattern | null, proposal?: CardPattern | null): AiDecisionTrace['divergence'] => {
     const original = key(baseline), ready = key(prepared), played = key(final);
     const suggested = proposal === undefined ? undefined : key(proposal);
-    if (original === ready && ready === played && (suggested === undefined || suggested === played)) return;
-    return { baseline: original, prepared: ready === original ? undefined : ready, proposal: suggested, final: played };
+    const initial = key(fallbackResult);
+    if (initial === original && original === ready && ready === played && (suggested === undefined || suggested === played)) return;
+    return { initialLocal: initial === original ? undefined : initial, baseline: original, prepared: ready === original ? undefined : ready, proposal: suggested, final: played };
   };
   const localNotes = corrections;
   options.onLocalReady?.(prepared);

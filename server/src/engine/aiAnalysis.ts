@@ -123,6 +123,7 @@ export interface SampleResult {
 
 export interface DecisionAnalysis {
   trickForecast?: Record<string, TrickForecast>;
+  teamLeadForecast?: Record<string, TrickForecast>;
   twoTricks?: Record<string, TwoTrickForecast>;
   teamPlan?: TeamPlan;
   teamRoutes?: TeamRoute[];
@@ -146,7 +147,7 @@ export interface TrickForecast {
 
 export function forecastTrick(hand: Card[], candidates: CardPattern[], last: CardPattern | null,
   level: number, context: AiDecisionContext, generate: GenerateReplies, deadline: number,
-  random: () => number = Math.random): Record<string, TrickForecast> | undefined {
+  random: () => number = Math.random, enumerateOnly = false): Record<string, TrickForecast> | undefined {
   const knowledge = buildPublicKnowledge(hand, context);
   if (!knowledge || (last && !context.players.some(p => p.seatIndex === context.lastPlayPlayerIndex))) return;
   const self = context.selfSeatIndex;
@@ -155,8 +156,8 @@ export function forecastTrick(hand: Card[], candidates: CardPattern[], last: Car
   const shape = (p: CardPattern | null) => p ? [p.type, p.rank, p.length].join(':') : 'PASS';
   const options: Array<CardPattern | null> = last ? [...candidates, null] : candidates;
   const roots = [...new Map(options.map(p => [shape(p), p])).values()];
-  const shortPartner = context.players.some(p => p.relation === 'partner' && p.finishRank === null && p.cardCount <= 5);
-  const deals = !last && shortPartner ? enumerateHiddenHands(hand, context, knowledge, 16) : null;
+  const deals = enumerateOnly ? enumerateHiddenHands(hand, context, knowledge, 16) : null;
+  if (enumerateOnly && !deals) return;
   let weightSum = 0;
   const totals = roots.map(() => ({ samples: 0, teamAhead: 0, partnerAhead: 0, allyExit: 0, enemyExit: 0 }));
   for (let sample = 0; sample < (deals?.length ?? 8) && performance.now() < deadline; sample++) {

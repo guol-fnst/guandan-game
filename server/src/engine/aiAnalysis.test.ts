@@ -1533,11 +1533,20 @@ test('equal-turn team leads send a partner out but respect an intervening finish
     ctx.players[3].finishRank = 1;
     ctx.publicTransfers = [...next.map(card => ({card, fromSeat: 0, toSeat: 1})),
       {card: take(16)[0], fromSeat: 0, toSeat: 2}];
-    const analysis = await analyzeDecision(hand, leads, leads, null, 3, undefined, findBestPlay);
-    analysis.trickForecast = forecastTrick(hand, leads, null, 3, ctx, generateLegalPlays, Infinity);
+    const analysis = await analyzeDecision(hand, leads, leads, null, 3, ctx, findBestPlay);
+    analysis.teamLeadForecast = forecastTrick(hand, leads, null, 3, ctx, generateLegalPlays, Infinity, Math.random, true);
     const result = finalizeAiDecision(exposed ? low : triple, leads, hand, null, true, 3, ctx, analysis);
     if (exposed) assert.notEqual(result?.type, PatternType.Single, 'next opponent goes out before partner');
-    else assert.equal(result?.type, PatternType.Single, 'partner can finish without delaying own exit');
+    else {
+      assert.equal(result?.type, PatternType.Single, 'partner can finish without delaying own exit');
+      // A quick partner exit cannot justify a lower expected team result.
+      for (const play of leads.filter(p => p.type === PatternType.Single)) {
+        const measured = analysis.candidates[analysisKey(play)].simulation;
+        if (measured) measured.meanReward = -1;
+      }
+      const defended = finalizeAiDecision(triple, leads, hand, null, true, 3, ctx, analysis);
+      assert.equal(defended?.type, PatternType.Triple);
+    }
   }
 });
 
