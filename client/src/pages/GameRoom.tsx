@@ -28,6 +28,15 @@ export default function GameRoom() {
     roundResult, setRoundResult, reset,
   } = useGameStore();
 
+  const [landscapeMode, setLandscapeMode] = useState(() => {
+    try { return localStorage.getItem('guandan-landscape') === '1'; } catch { return false; }
+  });
+  const toggleLandscape = () => {
+    const next = !landscapeMode;
+    setLandscapeMode(next);
+    try { localStorage.setItem('guandan-landscape', next ? '1' : '0'); } catch { /* Storage is optional. */ }
+  };
+
   const [playerActions, setPlayerActions] = useState<Record<string, PlayerAction>>({});
   const [errorMsg, setErrorMsg] = useState('');
   const [reportNotice, setReportNotice] = useState('');
@@ -457,6 +466,7 @@ export default function GameRoom() {
   };
 
   return (
+    <div className={`game-viewport${landscapeMode ? ' prefer-landscape' : ''}`}>
     <div className={`game-room${waiting ? ' is-waiting' : ''}${isSpectator ? ' is-spectator' : ''}`} style={styles.container}>
       {reportNotice && <div className="card-report-notice" role="status" aria-live="polite">{reportNotice}</div>}
       {inviteNotice && <div style={styles.inviteNotice} role="status" aria-live="polite">{inviteNotice}</div>}
@@ -491,6 +501,10 @@ export default function GameRoom() {
           <div className="room-exit-actions">
             <button type="button" className="btn-secondary" onClick={handleShareRoom}>
               {waiting ? '邀请朋友' : '分享观战'}
+            </button>
+            <button type="button" className="btn-secondary orientation-toggle"
+              aria-pressed={landscapeMode} onClick={toggleLandscape}>
+              {landscapeMode ? '竖屏' : '横屏'}
             </button>
             <button
               className="btn-danger"
@@ -866,6 +880,7 @@ export default function GameRoom() {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }
