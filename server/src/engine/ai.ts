@@ -416,6 +416,13 @@ export function scorePlay(
 
 /** A concrete low-cost takeover exception for the middle game, where paired
  * rollout evidence is usually unavailable. Preserve a teammate near finishing. */
+function replyImprovesOnPass(play: CardPattern, hand: Card[], level: number, analysis?: DecisionAnalysis): boolean {
+  if (!analysis) return false;
+  const key = analysisKey(play);
+  return improvesTrickRoute(analysis.trickForecast?.PASS, analysis.trickForecast?.[key],
+    analysis.handTurns, analysis.candidates[key]?.remainingTurns, 0, controlResourceCost(play, hand, level));
+}
+
 function productivePartnerTakeover(
   play: CardPattern, hand: Card[], allPlays: CardPattern[], last: CardPattern | null,
   level: number, context?: AiDecisionContext,
@@ -1116,6 +1123,7 @@ export function enforceTeamStrategy(
     && !immediateThreat && !catchesOpponent
     && !canContestWithReadyExit(proposed, level, context, analysis)
     && publicControlEvidence(proposed, hand, level, context)?.unbeatable !== true
+    && !replyImprovesOnPass(proposed, hand, level, analysis)
     && !materiallyBetterSimulation(proposed, null, analysis)) return changed(proposed, null, 'ready_exit');
   // In a quiet contest only the right to lead is at stake. A big reply
   // followed by a long, fragmented hand is not itself a finishing route.
@@ -1189,6 +1197,7 @@ export function enforceTeamStrategy(
   if (partnerLed && last) {
     if (!blocksReportedSingle(proposed, last, hand, level, context)
       && !materiallyBetterSimulation(proposed, null, analysis)
+      && !replyImprovesOnPass(proposed, hand, level, analysis)
       && !productivePartnerTakeover(proposed, hand, generateLegalPlays(hand, level), last, level, context)) {
       return changed(proposed, null, 'partner_cooperation');
     }
@@ -1733,7 +1742,7 @@ export async function findSmartPlay(
       // lengths. Apply the same evidence threshold used by decide to a PASS.
       if (!remainingTurns(local)?.exact || !remainingTurns(modelPlay)?.exact) return;
       return localValue >= modelValue + 0.8 && teamProspect(local) >= teamProspect(modelPlay)
-        && (modelPlay !== null || improvesRoute(modelPlay, local)) ? 'team_baseline' : undefined;
+        && (betterPartition || improvesRoute(modelPlay, local)) ? 'team_baseline' : undefined;
     }
     // Without shared tactical evidence, only count an exact partition loss;
     // never equate missing simulation data with a zero win rate.

@@ -1534,6 +1534,25 @@ test('one-cycle arbitration distinguishes a costly trick from a finish or interc
   assert.equal(improvesTrickRoute({ ...pass, samples: 4 }, { ...joker, samples: 4, allyExit: 1 }, before, after, 0, 6), false);
 });
 
+test('ready exit keeps the reply when matched forecasts show it prevents an enemy exit', () => {
+  const hand = rankedHand([13, 13]);
+  const reply = generateLegalPlays(hand, 2).find(p => p.type === PatternType.Single)!;
+  const last = generateLegalPlays(rankedHand([12]), 2)[0];
+  const context = contextFor([hand, [], [], []]);
+  context.lastPlayPlayerIndex = 3;
+  for (const player of context.players.slice(1)) player.cardCount = 5;
+  const pass = { samples: 8, teamAhead: 0, partnerAhead: 0, allyExit: 0, enemyExit: 0.75 };
+  const analysis: DecisionAnalysis = {
+    handTurns: { turns: 1, exact: true },
+    candidates: { [analysisKey(reply)]: { remainingTurns: { turns: 1, exact: true } } },
+    trickForecast: { PASS: pass, [analysisKey(reply)]: { ...pass, enemyExit: 0 } },
+    simulation: { status: 'sampled', samples: 0, elapsedMs: 0 },
+  };
+  assert.equal(enforceTeamStrategy(reply, [reply], hand, last, false, 2, context, analysis), reply);
+  analysis.trickForecast![analysisKey(reply)].samples = 4;
+  assert.equal(enforceTeamStrategy(reply, [reply], hand, last, false, 2, context, analysis), null);
+});
+
 test('a partition witness preserves physical cards even when the search budget expires', () => {
   const hand = rankedHand([3, 3, 3, 4, 4, 8, 9, 10, 11, 12, 15]);
   const plays = generateLegalPlays(hand, 2);
