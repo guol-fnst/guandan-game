@@ -157,9 +157,9 @@ git ls-remote codeup refs/heads/main
 
 ```bash
 PORT=3000
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_BASE_URL=https://www.fueternal.com/api/v1
 DEEPSEEK_API_KEY=replace_with_deepseek_api_key
-DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODEL=HW-deepseek-v4.1-flash-1017
 LOCAL_LLM_BASE_URL=http://192.168.150.51:3000/v1
 LOCAL_LLM_API_KEY=replace_with_local_model_api_key
 ```

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "dist/server/src/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=../.env src/index.ts",
     "build": "tsc",
     "test": "npm run build && node --test dist/server/src/engine/*.test.js",
     "benchmark:ai": "npm run build && node dist/server/src/engine/aiBenchmark.js",

@@ -12,6 +12,7 @@ function defaultRoomName() {
 }
 
 const LOCAL_AI_MODEL = 'Qwen3.8-27';
+const DEFAULT_DEEPSEEK_MODEL = 'HW-deepseek-v4.1-flash-1017';
 
 function filterSelectableModels(provider: AiProvider, models: string[]) {
   return Array.from(new Set(models.filter(model => provider === 'deepseek'
@@ -29,8 +30,8 @@ export default function Lobby() {
   const [roomPass, setRoomPass] = useState('');
   const [joinPass, setJoinPass] = useState('');
   const [info, setInfo] = useState('');
-  const [aiProvider, setAiProvider] = useState<AiProvider>('local');
-  const [aiModel, setAiModel] = useState(LOCAL_AI_MODEL);
+  const [aiProvider, setAiProvider] = useState<AiProvider>('deepseek');
+  const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
   const [aiModels, setAiModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
@@ -91,7 +92,7 @@ export default function Lobby() {
       setAiModels(selectableModels);
       if (selectableModels.length > 0) {
         const preferred = data.provider === 'deepseek'
-          ? (selectableModels.includes('deepseek-v4-flash') ? 'deepseek-v4-flash' : selectableModels[0])
+          ? (selectableModels.includes(DEFAULT_DEEPSEEK_MODEL) ? DEFAULT_DEEPSEEK_MODEL : selectableModels[0])
           : LOCAL_AI_MODEL;
         setAiModel(current => selectableModels.includes(current)
           ? current
@@ -236,8 +237,8 @@ export default function Lobby() {
                     }}
                     style={styles.select}
                   >
+                    <option value="deepseek">DeepSeek</option>
                     <option value="local">Local (192.168.150.51)</option>
-                    <option value="deepseek" disabled>DeepSeek（暂不可用）</option>
                   </select>
                 </label>
                 <label style={styles.fieldLabel}>

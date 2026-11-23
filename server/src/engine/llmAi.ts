@@ -8,7 +8,7 @@ const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const LOCAL_BASE_URL = 'http://192.168.150.51:3000/v1';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
   provider: 'deepseek',
-  model: 'deepseek-v4-flash',
+  model: 'HW-deepseek-v4.1-flash-1017',
 };
 const MODEL_REQUEST_TIMEOUT = 20000;
 // Keep room for complete JSON; this is a ceiling, not a target length.
