@@ -4,17 +4,28 @@ import { analysisKey, buildPublicKnowledge } from './aiAnalysis';
 import type { DecisionAnalysis } from './aiAnalysis';
 import { recordAiModelCall } from './aiTelemetry';
 
-const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const HWCLOUD_BASE_URL = 'https://www.fueternal.com/api/v1';
 const LOCAL_BASE_URL = 'http://192.168.150.51:3000/v1';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
-  provider: 'deepseek',
+  provider: 'hwcloud',
   model: 'HW-deepseek-v4.1-flash-1017',
 };
-const MODEL_REQUEST_TIMEOUT = 20000;
-// Keep room for complete JSON; this is a ceiling, not a target length.
-// Thinking is explicitly disabled below to reduce per-turn latency.
-const DEEPSEEK_MAX_OUTPUT_TOKENS = 4096;
+// The local intranet Qwen answers fast; keep its deadline tight.
+const LOCAL_MODEL_REQUEST_TIMEOUT = 20000;
+// Gateway models may reason: HW-glm-5.3 regularly needs 10-30s per decision. Stay well
+// under the 90s turn watchdog so a timed-out request can still fall back to rule AI.
+const HWCLOUD_MODEL_REQUEST_TIMEOUT = 45000;
+// Keep room for complete JSON; these are ceilings, not target lengths.
+// DeepSeek-family models accept thinking:{type:'disabled'} to cut per-turn latency.
+// GLM-family models on the gateway always emit reasoning tokens (thinking toggles are
+// rejected or ignored), so they get extra headroom for reasoning on top of the JSON.
+const DEEPSEEK_FAMILY_MAX_OUTPUT_TOKENS = 4096;
+const GLM_FAMILY_MAX_OUTPUT_TOKENS = 8192;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
+
+function modelRequestTimeoutMs(provider: AiProvider): number {
+  return provider === 'hwcloud' ? HWCLOUD_MODEL_REQUEST_TIMEOUT : LOCAL_MODEL_REQUEST_TIMEOUT;
+}
 
 interface ProviderConfig {
   baseUrl: string;
@@ -61,8 +72,8 @@ function getProviderConfig(provider: AiProvider): ProviderConfig {
     };
   }
   return {
-    baseUrl: trimTrailingSlash(process.env.DEEPSEEK_BASE_URL || DEEPSEEK_BASE_URL),
-    apiKey: process.env.DEEPSEEK_API_KEY || '',
+    baseUrl: trimTrailingSlash(process.env.HWCLOUD_BASE_URL || HWCLOUD_BASE_URL),
+    apiKey: process.env.HWCLOUD_API_KEY || '',
   };
 }
 
@@ -70,12 +81,12 @@ export function normalizeAiSelection(
   provider: unknown,
   model: unknown,
 ): AiModelSelection {
-  const normalizedProvider: AiProvider = provider === 'local' ? 'local' : 'deepseek';
+  const normalizedProvider: AiProvider = provider === 'local' ? 'local' : 'hwcloud';
   const candidate = typeof model === 'string' && /^[\w./:-]{1,120}$/.test(model.trim())
     ? model.trim()
     : '';
-  const configuredDefault = normalizedProvider === 'deepseek'
-    ? (process.env.DEEPSEEK_MODEL || DEFAULT_AI_SELECTION.model)
+  const configuredDefault = normalizedProvider === 'hwcloud'
+    ? (process.env.HWCLOUD_MODEL || DEFAULT_AI_SELECTION.model)
     : '';
   const normalizedModel = isSelectableAiModel(normalizedProvider, candidate)
     ? candidate
@@ -89,7 +100,7 @@ export function normalizeAiSelection(
 export function isSelectableAiModel(provider: AiProvider, model: string): boolean {
   const modelId = model.trim();
   if (!modelId) return false;
-  if (provider === 'deepseek') return !modelId.toLowerCase().includes('pro');
+  if (provider === 'hwcloud') return modelId.toLowerCase().startsWith('hw-');
   return modelId === LOCAL_AI_MODEL;
 }
 
@@ -106,7 +117,7 @@ export async function fetchAvailableAiModels(provider: AiProvider): Promise<stri
   if (!config.apiKey) throw new Error(`${provider} API key is not configured`);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT);
+  const timeoutId = setTimeout(() => controller.abort(), modelRequestTimeoutMs(provider));
   try {
     const response = await fetch(`${config.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
@@ -361,20 +372,26 @@ export async function llmFindBestPlay(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT);
+    const timeoutId = setTimeout(() => controller.abort(), modelRequestTimeoutMs(normalizedSelection.provider));
     let response: Response;
     let data: any;
     try {
+      const isDeepseekFamilyModel = normalizedSelection.model.toLowerCase().includes('deepseek');
       const requestBody: Record<string, unknown> = {
         model: normalizedSelection.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'deepseek' ? DEEPSEEK_MAX_OUTPUT_TOKENS : 192,
+        max_tokens: normalizedSelection.provider === 'hwcloud'
+          ? (isDeepseekFamilyModel ? DEEPSEEK_FAMILY_MAX_OUTPUT_TOKENS : GLM_FAMILY_MAX_OUTPUT_TOKENS)
+          : 192,
       };
-      if (normalizedSelection.provider === 'deepseek') {
-        requestBody.thinking = { type: 'disabled' };
+      if (normalizedSelection.provider === 'hwcloud') {
+        // ModelArts GLM rejects thinking:{type:'disabled'}; only DeepSeek-family models take it.
+        if (isDeepseekFamilyModel) {
+          requestBody.thinking = { type: 'disabled' };
+        }
         requestBody.response_format = { type: 'json_object' };
       } else {
         requestBody.temperature = stage === '残局' ? 0 : 0.25;

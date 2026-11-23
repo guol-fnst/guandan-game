@@ -73,7 +73,7 @@ export function setupSocketHandlers(io: Server) {
     });
 
     socket.on('get_ai_models', async (data: { provider?: AiProvider; requestId?: number }) => {
-      const provider: AiProvider = data.provider === 'local' ? 'local' : 'deepseek';
+      const provider: AiProvider = data.provider === 'local' ? 'local' : 'hwcloud';
       if (!socket.userId) {
         socket.emit('ai_models_result', {
           provider,

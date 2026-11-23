@@ -12,11 +12,12 @@ function defaultRoomName() {
 }
 
 const LOCAL_AI_MODEL = 'Qwen3.8-27';
-const DEFAULT_DEEPSEEK_MODEL = 'HW-deepseek-v4.1-flash-1017';
+const DEFAULT_HWCLOUD_MODEL = 'HW-deepseek-v4.1-flash-1017';
+const PROVIDER_LABELS: Record<AiProvider, string> = { hwcloud: 'HWCloud', local: 'Local' };
 
 function filterSelectableModels(provider: AiProvider, models: string[]) {
-  return Array.from(new Set(models.filter(model => provider === 'deepseek'
-    ? !model.toLowerCase().includes('pro')
+  return Array.from(new Set(models.filter(model => provider === 'hwcloud'
+    ? model.toLowerCase().startsWith('hw-')
     : model === LOCAL_AI_MODEL
   )));
 }
@@ -30,8 +31,8 @@ export default function Lobby() {
   const [roomPass, setRoomPass] = useState('');
   const [joinPass, setJoinPass] = useState('');
   const [info, setInfo] = useState('');
-  const [aiProvider, setAiProvider] = useState<AiProvider>('deepseek');
-  const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
+  const [aiProvider, setAiProvider] = useState<AiProvider>('hwcloud');
+  const [aiModel, setAiModel] = useState(DEFAULT_HWCLOUD_MODEL);
   const [aiModels, setAiModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
@@ -91,8 +92,8 @@ export default function Lobby() {
       setModelsError(data.error || '');
       setAiModels(selectableModels);
       if (selectableModels.length > 0) {
-        const preferred = data.provider === 'deepseek'
-          ? (selectableModels.includes(DEFAULT_DEEPSEEK_MODEL) ? DEFAULT_DEEPSEEK_MODEL : selectableModels[0])
+        const preferred = data.provider === 'hwcloud'
+          ? (selectableModels.includes(DEFAULT_HWCLOUD_MODEL) ? DEFAULT_HWCLOUD_MODEL : selectableModels[0])
           : LOCAL_AI_MODEL;
         setAiModel(current => selectableModels.includes(current)
           ? current
@@ -237,7 +238,7 @@ export default function Lobby() {
                     }}
                     style={styles.select}
                   >
-                    <option value="deepseek">DeepSeek</option>
+                    <option value="hwcloud">HWCloud</option>
                     <option value="local">Local (192.168.150.51)</option>
                   </select>
                 </label>
@@ -305,7 +306,7 @@ export default function Lobby() {
                 <div style={styles.roomInfo}>
                   <span style={styles.roomName}>{room.name}</span>
                   <span style={styles.roomMeta}>
-                    {room.hasPassword ? '🔒 ' : ''}等级{room.level} | {room.playerCount}人/{room.maxPlayers}人 | {room.phase === GamePhase.Waiting ? '开局自动补 AI' : room.aiCount > 0 ? `AIx${room.aiCount}` : '全真人'} | {room.aiProvider}/{room.aiModel}
+                    {room.hasPassword ? '🔒 ' : ''}等级{room.level} | {room.playerCount}人/{room.maxPlayers}人 | {room.phase === GamePhase.Waiting ? '开局自动补 AI' : room.aiCount > 0 ? `AIx${room.aiCount}` : '全真人'} | {PROVIDER_LABELS[room.aiProvider]}/{room.aiModel}
                   </span>
                   {room.phase !== GamePhase.Waiting && (
                     <button

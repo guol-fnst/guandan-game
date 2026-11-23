@@ -11,18 +11,25 @@ const play: CardPattern = {
   cards: [{ id: 1, rank: 3, suit: Suit.Spade }],
 };
 
-async function withResponse(data: unknown, check: (logs: string[]) => Promise<void>) {
+async function withResponse(
+  data: unknown,
+  check: (logs: string[]) => Promise<void>,
+  options: { maxTokens?: number; thinking?: boolean } = {},
+) {
   const previousFetch = globalThis.fetch;
-  const previousKey = process.env.DEEPSEEK_API_KEY;
+  const previousKey = process.env.HWCLOUD_API_KEY;
   const previousInfo = console.info;
   const previousWarn = console.warn;
   const logs: string[] = [];
-  process.env.DEEPSEEK_API_KEY = 'test-only';
+  const { maxTokens = 4096, thinking = true } = options;
+  process.env.HWCLOUD_API_KEY = 'test-only';
   resetAiTelemetry();
   globalThis.fetch = (async (_url, init) => {
     const body = JSON.parse(init!.body as string);
-    assert.equal(body.max_tokens, 4096);
-    assert.deepEqual(body.thinking, { type: 'disabled' });
+    assert.equal(body.max_tokens, maxTokens);
+    if (thinking) assert.deepEqual(body.thinking, { type: 'disabled' });
+    else assert.equal(body.thinking, undefined);
+    assert.deepEqual(body.response_format, { type: 'json_object' });
     assert.equal(body.reasoning_effort, undefined);
     return { ok: true, json: async () => data } as Response;
   }) as typeof fetch;
@@ -33,13 +40,16 @@ async function withResponse(data: unknown, check: (logs: string[]) => Promise<vo
     globalThis.fetch = previousFetch;
     console.info = previousInfo;
     console.warn = previousWarn;
-    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = previousKey;
+    if (previousKey === undefined) delete process.env.HWCLOUD_API_KEY;
+    else process.env.HWCLOUD_API_KEY = previousKey;
   }
 }
 
 const choose = () => llmFindBestPlay(play.cards, [play], null, true, 5,
-  undefined, { provider: 'deepseek', model: 'deepseek-flash' });
+  undefined, { provider: 'hwcloud', model: 'HW-deepseek-v4.1-flash-1017' });
+
+const chooseGlm = () => llmFindBestPlay(play.cards, [play], null, true, 5,
+  undefined, { provider: 'hwcloud', model: 'HW-glm-5.3' });
 
 test('empty truncated response falls back and logs token metadata without reasoning text', async () => {
   await withResponse({
@@ -102,10 +112,17 @@ test('non-forced follow still calls the model and honors its PASS with thinking 
       ...play.cards, { id: 2, rank: 4, suit: Suit.Club },
     ], { type: PatternType.Single, rank: 2, length: 1,
       cards: [{ id: 0, rank: 2, suit: Suit.Diamond }],
-    }, false, 5, undefined, { provider: 'deepseek', model: 'deepseek-flash' });
+    }, false, 5, undefined, { provider: 'hwcloud', model: 'HW-deepseek-v4.1-flash-1017' });
     assert.equal(result, null);
     const telemetry = getAiTelemetrySnapshot();
     assert.equal(telemetry.modelCalls, 1);
     assert.equal(telemetry.modelOutcomes.pass, 1);
   });
+});
+
+test('GLM family keeps JSON mode without the thinking toggle', async () => {
+  await withResponse({ choices: [{ finish_reason: 'stop', message: { content: '{"action_id":0}' } }] }, async () => {
+    assert.equal(await chooseGlm(), play);
+    assert.equal(getAiTelemetrySnapshot().modelOutcomes.success, 1);
+  }, { maxTokens: 8192, thinking: false });
 });

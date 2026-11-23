@@ -40,7 +40,7 @@ Uses JSON files at `data/users.json` and `data/records.json` (no native modules 
 | `server/src/engine/compare.ts` | Pattern comparison, bomb ranking |
 | `server/src/engine/rules.ts` | Level system, tribute, partner logic |
 | `server/src/engine/ai.ts` | `findBestPlay` (sync rules, default path), `findSmartPlay` (async LLM, opt-in per room) |
-| `server/src/engine/llmAi.ts` | DeepSeek API integration, only used when the room opts into `aiUseLLM` |
+| `server/src/engine/llmAi.ts` | HWCloud (OpenAI-compatible gateway) integration, only used when the room opts into `aiUseLLM` |
 
 ### AI flow (critical)
 
@@ -50,7 +50,7 @@ Uses JSON files at `data/users.json` and `data/records.json` (no native modules 
 
 ```
 startTurn → (AI: setTimeout 500ms → aiPlay → findBestPlay | findSmartPlay → playCards)
-           → (all players: 90s watchdog; model request: 20s timeout)
+           → (all players: 90s watchdog; model request: 45s hwcloud / 20s local timeout)
 
 playCards → advanceTurn → broadcastState → startTurn()  ← MUST call startTurn!
 handlePass → advanceTurn → broadcastState → startTurn()  ← MUST call startTurn!
@@ -101,7 +101,7 @@ Service management: `systemctl status/restart oowsp` (via sudo). Nginx config at
 
 ## Environment
 
-`.env` contains `DEEPSEEK_API_KEY`. Not committed to git. On the server, set via systemd `Environment=` in the oowsp service file.
+`.env` contains `HWCLOUD_API_KEY` (plus `HWCLOUD_BASE_URL` / `HWCLOUD_MODEL`). Not committed to git. On the server, set via `/home/fes/oowsp/.env.production`, referenced by the oowsp systemd unit's `EnvironmentFile=`.
 
 ## Gotchas
 

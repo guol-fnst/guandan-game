@@ -8,31 +8,37 @@ import {
   normalizeAiSelection,
 } from './llmAi';
 
-test('DeepSeek exposes queried non-Pro models and rejects Pro models', () => {
-  assert.equal(isSelectableAiModel('deepseek', 'deepseek-v4-flash'), true);
-  assert.equal(isSelectableAiModel('deepseek', 'deepseek-chat'), true);
-  assert.equal(isSelectableAiModel('deepseek', 'deepseek-reasoner'), true);
-  assert.equal(isSelectableAiModel('deepseek', 'deepseek-v4-pro'), false);
-  assert.equal(isSelectableAiModel('deepseek', 'DEEPSEEK-PRO-FAST'), false);
+test('HWCloud only exposes HW- prefixed models', () => {
+  assert.equal(isSelectableAiModel('hwcloud', 'HW-deepseek-v4.1-flash-1017'), true);
+  assert.equal(isSelectableAiModel('hwcloud', 'HW-glm-5.3'), true);
+  assert.equal(isSelectableAiModel('hwcloud', 'hw-glm-5.3'), true);
+  assert.equal(isSelectableAiModel('hwcloud', 'deepseek-v4-flash'), false);
+  assert.equal(isSelectableAiModel('hwcloud', 'deepseek-v4-pro'), false);
+  assert.equal(isSelectableAiModel('hwcloud', 'Qwen3.8-27'), false);
   assert.deepEqual(
-    filterSelectableAiModels('deepseek', [
-      'deepseek-chat',
-      'deepseek-v4-flash',
-      'deepseek-reasoner',
-      'deepseek-v4-pro',
-      'deepseek-v4-flash',
+    filterSelectableAiModels('hwcloud', [
+      'deepseek-v4.1-flash',
+      'HW-glm-5.3',
+      'glm-5.3',
+      'HW-deepseek-v4.1-flash-1017',
+      'HW-glm-5.3',
     ]),
-    ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash'],
+    ['HW-deepseek-v4.1-flash-1017', 'HW-glm-5.3'],
   );
   assert.deepEqual(
-    normalizeAiSelection('deepseek', 'deepseek-chat'),
-    { provider: 'deepseek', model: 'deepseek-chat' },
+    normalizeAiSelection('hwcloud', 'HW-glm-5.3'),
+    { provider: 'hwcloud', model: 'HW-glm-5.3' },
   );
-  assert.deepEqual(normalizeAiSelection('deepseek', 'deepseek-v4-pro'), {
-    provider: 'deepseek',
+  assert.deepEqual(normalizeAiSelection('hwcloud', 'deepseek-v4-flash'), {
+    provider: 'hwcloud',
     model: '',
   });
-  assert.deepEqual(normalizeAiSelection('deepseek', undefined), DEFAULT_AI_SELECTION);
+  // Legacy clients that still send the old provider id are remapped to hwcloud.
+  assert.deepEqual(normalizeAiSelection('deepseek', 'HW-glm-5.3'), {
+    provider: 'hwcloud',
+    model: 'HW-glm-5.3',
+  });
+  assert.deepEqual(normalizeAiSelection('hwcloud', undefined), DEFAULT_AI_SELECTION);
 });
 
 test('Local only exposes and accepts Qwen3.8-27', () => {
