@@ -17,7 +17,7 @@ const PROVIDER_LABELS: Record<AiProvider, string> = { hwcloud: 'HWCloud', local:
 
 function filterSelectableModels(provider: AiProvider, models: string[]) {
   return Array.from(new Set(models.filter(model => provider === 'hwcloud'
-    ? model.toLowerCase().startsWith('hw-')
+    ? model === DEFAULT_HWCLOUD_MODEL
     : model === LOCAL_AI_MODEL
   )));
 }

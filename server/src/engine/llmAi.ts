@@ -6,26 +6,19 @@ import { recordAiModelCall } from './aiTelemetry';
 
 const HWCLOUD_BASE_URL = 'https://www.fueternal.com/api/v1';
 const LOCAL_BASE_URL = 'http://192.168.150.51:3000/v1';
+// The only gateway model exposed to players; GLM was dropped for its per-decision latency.
+const HWCLOUD_SELECTABLE_MODEL = 'HW-deepseek-v4.1-flash-1017';
 export const DEFAULT_AI_SELECTION: AiModelSelection = {
   provider: 'hwcloud',
-  model: 'HW-deepseek-v4.1-flash-1017',
+  model: HWCLOUD_SELECTABLE_MODEL,
 };
-// The local intranet Qwen answers fast; keep its deadline tight.
-const LOCAL_MODEL_REQUEST_TIMEOUT = 20000;
-// Gateway models may reason: HW-glm-5.3 regularly needs 10-30s per decision. Stay well
-// under the 90s turn watchdog so a timed-out request can still fall back to rule AI.
-const HWCLOUD_MODEL_REQUEST_TIMEOUT = 45000;
-// Keep room for complete JSON; these are ceilings, not target lengths.
-// DeepSeek-family models accept thinking:{type:'disabled'} to cut per-turn latency.
-// GLM-family models on the gateway always emit reasoning tokens (thinking toggles are
-// rejected or ignored), so they get extra headroom for reasoning on top of the JSON.
-const DEEPSEEK_FAMILY_MAX_OUTPUT_TOKENS = 4096;
-const GLM_FAMILY_MAX_OUTPUT_TOKENS = 8192;
+// Model requests must stay well under the 90s turn watchdog so a timed-out request
+// can still fall back to rule-based AI.
+const MODEL_REQUEST_TIMEOUT = 20000;
+// Keep room for complete JSON; this is a ceiling, not a target length.
+// Thinking is explicitly disabled below to reduce per-turn latency.
+const HWCLOUD_MAX_OUTPUT_TOKENS = 4096;
 export const LOCAL_AI_MODEL = 'Qwen3.8-27';
-
-function modelRequestTimeoutMs(provider: AiProvider): number {
-  return provider === 'hwcloud' ? HWCLOUD_MODEL_REQUEST_TIMEOUT : LOCAL_MODEL_REQUEST_TIMEOUT;
-}
 
 interface ProviderConfig {
   baseUrl: string;
@@ -100,7 +93,7 @@ export function normalizeAiSelection(
 export function isSelectableAiModel(provider: AiProvider, model: string): boolean {
   const modelId = model.trim();
   if (!modelId) return false;
-  if (provider === 'hwcloud') return modelId.toLowerCase().startsWith('hw-');
+  if (provider === 'hwcloud') return modelId === HWCLOUD_SELECTABLE_MODEL;
   return modelId === LOCAL_AI_MODEL;
 }
 
@@ -117,7 +110,7 @@ export async function fetchAvailableAiModels(provider: AiProvider): Promise<stri
   if (!config.apiKey) throw new Error(`${provider} API key is not configured`);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), modelRequestTimeoutMs(provider));
+  const timeoutId = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT);
   try {
     const response = await fetch(`${config.baseUrl}/models`, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
@@ -372,26 +365,20 @@ export async function llmFindBestPlay(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), modelRequestTimeoutMs(normalizedSelection.provider));
+    const timeoutId = setTimeout(() => controller.abort(), MODEL_REQUEST_TIMEOUT);
     let response: Response;
     let data: any;
     try {
-      const isDeepseekFamilyModel = normalizedSelection.model.toLowerCase().includes('deepseek');
       const requestBody: Record<string, unknown> = {
         model: normalizedSelection.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: normalizedSelection.provider === 'hwcloud'
-          ? (isDeepseekFamilyModel ? DEEPSEEK_FAMILY_MAX_OUTPUT_TOKENS : GLM_FAMILY_MAX_OUTPUT_TOKENS)
-          : 192,
+        max_tokens: normalizedSelection.provider === 'hwcloud' ? HWCLOUD_MAX_OUTPUT_TOKENS : 192,
       };
       if (normalizedSelection.provider === 'hwcloud') {
-        // ModelArts GLM rejects thinking:{type:'disabled'}; only DeepSeek-family models take it.
-        if (isDeepseekFamilyModel) {
-          requestBody.thinking = { type: 'disabled' };
-        }
+        requestBody.thinking = { type: 'disabled' };
         requestBody.response_format = { type: 'json_object' };
       } else {
         requestBody.temperature = stage === '残局' ? 0 : 0.25;

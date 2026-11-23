@@ -50,7 +50,7 @@ Uses JSON files at `data/users.json` and `data/records.json` (no native modules 
 
 ```
 startTurn → (AI: setTimeout 500ms → aiPlay → findBestPlay | findSmartPlay → playCards)
-           → (all players: 90s watchdog; model request: 45s hwcloud / 20s local timeout)
+           → (all players: 90s watchdog; model request: 20s timeout)
 
 playCards → advanceTurn → broadcastState → startTurn()  ← MUST call startTurn!
 handlePass → advanceTurn → broadcastState → startTurn()  ← MUST call startTurn!

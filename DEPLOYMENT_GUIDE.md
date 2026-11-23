@@ -164,8 +164,8 @@ LOCAL_LLM_BASE_URL=http://192.168.150.51:3000/v1
 LOCAL_LLM_API_KEY=replace_with_local_model_api_key
 ```
 
-玩家出牌及还贡超时统一为90秒。HWCloud 请求超时为45秒（HW-glm 为推理模型，单次决策常需10-30秒），
-local 请求超时为20秒。旧的 `DEEPSEEK_TIMEOUT_MS`、`HWCLOUD_TIMEOUT_MS`、`LOCAL_LLM_TIMEOUT_MS`、`LLM_TIMEOUT_MS` 环境变量不再覆盖此设置。
+玩家出牌及还贡超时统一为90秒。HWCloud 和 local 请求超时统一为20秒，
+旧的 `DEEPSEEK_TIMEOUT_MS`、`HWCLOUD_TIMEOUT_MS`、`LOCAL_LLM_TIMEOUT_MS`、`LLM_TIMEOUT_MS` 环境变量不再覆盖此设置。
 
 设置权限：
 
