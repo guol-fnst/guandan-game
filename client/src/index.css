@@ -39,22 +39,12 @@ body {
   flex-direction: column;
 }
 
-/* Felt table with a restrained wood rail, inspired by a physical card table. */
-.game-room {
-  padding: clamp(6px, 1.1vw, 18px);
-}
-
-.game-room > div {
-  border: clamp(7px, .85vw, 14px) solid #4c2c1b;
-  border-radius: clamp(16px, 2vw, 28px);
+/* Edge-to-edge felt keeps the full table area available for play. */
+.game-table {
   background:
     radial-gradient(ellipse at 50% 46%, rgba(29, 126, 83, .4), transparent 58%),
     repeating-linear-gradient(25deg, rgba(255,255,255,.012) 0 1px, transparent 1px 5px),
     linear-gradient(135deg, #064c32 0%, #075f3d 48%, #033b26 100%);
-  box-shadow:
-    inset 0 0 0 2px rgba(245, 197, 113, .16),
-    inset 0 0 42px rgba(0, 0, 0, .34),
-    0 10px 26px rgba(0, 0, 0, .45);
 }
 
 .duel-scoreboard {
@@ -247,32 +237,26 @@ input::placeholder { color: rgba(255,255,255,0.5); }
   box-shadow: 0 2px 7px rgba(0,0,0,0.36), inset 0 1px 0 #fff;
 }
 
-/* Dedicated joker faces stay recognisable when cards overlap in a hand. */
+/* Classic joker faces: a vertical wordmark and one original jester mascot. */
 .playing-card--joker {
-  border-width: 2px;
-  overflow: hidden;
+  background: linear-gradient(145deg, #fffef9, #eeece6);
+  border-color: #c1bcb2;
 }
-
-.playing-card--joker::before {
-  content: '';
+.playing-card--joker-big { color: #bd2f28 !important; }
+.playing-card--joker-small { color: #373b40 !important; }
+.joker-lettering {
   position: absolute;
-  inset: 6px;
-  border: 1px solid currentColor;
-  border-radius: inherit;
-  opacity: .26;
+  top: 5%; left: 6%; bottom: 5%;
+  z-index: 2;
+  display: flex; flex-direction: column; justify-content: space-around;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: var(--joker-letter-size); font-weight: 800; line-height: .85;
 }
-
-.playing-card--joker-big {
-  background: linear-gradient(145deg, #fff8ef 0%, #ffd5c7 100%);
-  border-color: #a82927;
-  color: #b62c24 !important;
+.playing-card.playing-card--joker .card-center--joker {
+  inset: 15% 0 1% 26%;
 }
-
-.playing-card--joker-small {
-  background: linear-gradient(145deg, #f7fbff 0%, #c8e0f2 100%);
-  border-color: #245a89;
-  color: #23547f !important;
-}
+.joker-illustration { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.playing-card--joker-small .joker-illustration { filter: grayscale(1); opacity: .9; }
 
 .playing-card[role="button"]:hover {
   transform: translateY(-5px);
@@ -345,69 +329,6 @@ input::placeholder { color: rgba(255,255,255,0.5); }
 
 .playing-card:not(.playing-card--hand) .card-center {
   inset: 0;
-}
-
-.card-center--joker {
-  inset: 25% 0 0;
-  text-shadow: 0 1px 0 rgba(255,255,255,.8);
-}
-
-.joker-face {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  line-height: .8;
-}
-
-.joker-crown {
-  line-height: .7;
-}
-
-.joker-title {
-  padding: 2px 4px;
-  border: 1.5px solid currentColor;
-  border-radius: 3px;
-  background: rgba(255,255,255,.54);
-  font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  font-size: clamp(9px, .72vw, 14px);
-  font-weight: 900;
-  letter-spacing: .08em;
-}
-
-.joker-card-badge {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-  z-index: 3;
-  padding: 2px;
-  border: 1.5px solid currentColor;
-  border-radius: 3px;
-  background: rgba(255,255,255,.82);
-  font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  font-size: 8px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0;
-  writing-mode: vertical-rl;
-  text-orientation: upright;
-}
-
-.joker-card-badge--big {
-  color: #c52c22;
-}
-
-.joker-card-badge--small {
-  color: #30343b;
-}
-
-.playing-card--hand .joker-card-badge {
-  left: 5px;
-  bottom: 5px;
-  padding: 2px 3px;
-  border-width: 2px;
-  font-size: clamp(10px, 1vw, 18px);
 }
 
 .level-card-badge {
@@ -902,7 +823,7 @@ body, #root { min-height: 100dvh; height: 100dvh; }
 body { overflow: auto; }
 button, summary, [role="button"] { touch-action: manipulation; }
 button:disabled { cursor: default; }
-.game-room { height: 100dvh !important; padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left)); }
+.game-room { height: 100dvh !important; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 .player-seat { position: absolute; z-index: 12; }
 .player-seat--top { top: 8%; left: 50%; transform: translateX(-50%); }
 .player-seat--left { top: 40%; left: 2%; }
@@ -931,7 +852,6 @@ button:disabled { cursor: default; }
 
 @container table-viewport (max-width: 900px) {
   input, select { font-size: 16px !important; }
-  .game-room > div { border-width: 4px; border-radius: 14px; }
   .duel-scoreboard { top: 6px; left: 6px; min-width: 132px; padding: 4px; }
   .duel-score-team strong { font-size: 20px; }
   .room-exit-actions { top: 8px; right: 6px; gap: 4px; }

@@ -157,15 +157,15 @@ git ls-remote codeup refs/heads/main
 
 ```bash
 PORT=3000
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_API_KEY=replace_with_deepseek_api_key
-DEEPSEEK_MODEL=deepseek-v4-flash
+HWCLOUD_BASE_URL=https://www.fueternal.com/api/v1
+HWCLOUD_API_KEY=replace_with_hwcloud_api_key
+HWCLOUD_MODEL=HW-deepseek-v4.1-flash-1017
 LOCAL_LLM_BASE_URL=http://192.168.150.51:3000/v1
 LOCAL_LLM_API_KEY=replace_with_local_model_api_key
 ```
 
-玩家出牌及还贡超时统一为90秒。DeepSeek 和 local 请求超时统一为20秒，
-旧的 `DEEPSEEK_TIMEOUT_MS`、`LOCAL_LLM_TIMEOUT_MS`、`LLM_TIMEOUT_MS` 环境变量不再覆盖此设置。
+玩家出牌及还贡超时统一为90秒。HWCloud 和 local 请求超时统一为20秒，
+旧的 `DEEPSEEK_TIMEOUT_MS`、`HWCLOUD_TIMEOUT_MS`、`LOCAL_LLM_TIMEOUT_MS`、`LLM_TIMEOUT_MS` 环境变量不再覆盖此设置。
 
 设置权限：
 
@@ -304,7 +304,7 @@ curl -I http://127.0.0.1/
 - 能创建房间并自动补齐 AI。
 - 四个座位能正常出牌、过牌和轮转。
 - 聊天与观察者模式正常。
-- DeepSeek 与 local 模型列表能正常加载。
+- HWCloud 与 local 模型列表能正常加载。
 
 若页面仍显示旧版本，使用 `Cmd+Shift+R` 或 `Ctrl+Shift+R` 强制刷新。
 

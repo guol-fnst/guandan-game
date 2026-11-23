@@ -39,8 +39,8 @@ Uses JSON files at `data/users.json` and `data/records.json` (no native modules 
 | `server/src/engine/patterns.ts` | 18 pattern types, identification, 逢人配(wild card) substitution |
 | `server/src/engine/compare.ts` | Pattern comparison, bomb ranking |
 | `server/src/engine/rules.ts` | Level system, tribute, partner logic |
-| `server/src/engine/ai.ts` | `findBestPlay` provides the synchronous heuristic. `findSmartPlay` selects the room action using team analysis and optional model advice. |
-| `server/src/engine/llmAi.ts` | Fueternal HW DeepSeek, Qwen and official DeepSeek model integration for rooms with `aiUseLLM` enabled |
+| `server/src/engine/ai.ts` | `findBestPlay` (sync rules, default path), `findSmartPlay` (async LLM, opt-in per room) |
+| `server/src/engine/llmAi.ts` | HWCloud (OpenAI-compatible gateway) integration, only used when the room opts into `aiUseLLM` |
 
 ### AI flow (critical)
 
@@ -101,7 +101,7 @@ Service management: `systemctl status/restart oowsp` (via sudo). Nginx config at
 
 ## Environment
 
-`.env` contains `DEEPSEEK_API_KEY`. Not committed to git. On the server, set via systemd `Environment=` in the oowsp service file.
+`.env` contains `HWCLOUD_API_KEY` (plus `HWCLOUD_BASE_URL` / `HWCLOUD_MODEL`). Not committed to git. On the server, set via `/home/fes/oowsp/.env.production`, referenced by the oowsp systemd unit's `EnvironmentFile=`.
 
 ## Gotchas
 

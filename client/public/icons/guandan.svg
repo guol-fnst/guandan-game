@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>掼蛋在线对战</title>
+  <defs>
+    <linearGradient id="felt" x2="1" y2="1"><stop stop-color="#119b87"/><stop offset="1" stop-color="#03473f"/></linearGradient>
+    <linearGradient id="paper" x2="0" y2="1"><stop stop-color="#fffef5"/><stop offset="1" stop-color="#eae7da"/></linearGradient>
+    <linearGradient id="gold" x2="1" y2="1"><stop stop-color="#ffe9a3"/><stop offset="1" stop-color="#cb9235"/></linearGradient>
+    <path id="spade" d="M0-58C-18-35-55-17-55 11C-55 42-18 48-7 22C-7 42-14 53-26 60H26C14 53 7 42 7 22C18 48 55 42 55 11C55-17 18-35 0-58Z"/>
+    <path id="heart" d="M0 54C-13 41-59 9-59-22C-59-60-15-66 0-34C15-66 59-60 59-22C59 9 13 41 0 54Z"/>
+  </defs>
+  <rect width="512" height="512" fill="url(#felt)"/>
+  <circle cx="256" cy="256" r="216" fill="none" stroke="#ebcb79" stroke-opacity=".25" stroke-width="3"/>
+  <g transform="rotate(-14 203 260)">
+    <rect x="109" y="111" width="194" height="294" rx="23" fill="#002d2a" opacity=".35" transform="translate(0 12)"/>
+    <rect x="109" y="111" width="194" height="294" rx="23" fill="url(#paper)" stroke="url(#gold)" stroke-width="7"/>
+    <use href="#spade" transform="translate(144 155) scale(.27)" fill="#172e32"/>
+    <use href="#spade" transform="translate(206 263) scale(.94)" fill="#172e32"/>
+  </g>
+  <g transform="rotate(13 316 270)">
+    <rect x="219" y="120" width="194" height="294" rx="23" fill="#002d2a" opacity=".4" transform="translate(0 12)"/>
+    <rect x="219" y="120" width="194" height="294" rx="23" fill="url(#paper)" stroke="url(#gold)" stroke-width="7"/>
+    <use href="#heart" transform="translate(254 164) scale(.25)" fill="#d83f36"/>
+    <use href="#heart" transform="translate(316 273) scale(.91)" fill="#d83f36"/>
+    <use href="#heart" transform="translate(378 371) rotate(180) scale(.25)" fill="#d83f36"/>
+  </g>
+</svg>

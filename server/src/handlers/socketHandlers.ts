@@ -212,7 +212,8 @@ export function setupSocketHandlers(io: Server) {
         socket.emit('error', { message: '房间不存在' });
         return;
       }
-      if (room.password && room.password !== (data.password || '')) {
+      const isCurrentSpectator = socket.currentRoomId === room.id && room.hasSpectator(socket.userId);
+      if (!isCurrentSpectator && room.password && room.password !== (data.password || '')) {
         socket.emit('error', { message: '房间密码错误' });
         return;
       }
@@ -267,6 +268,14 @@ export function setupSocketHandlers(io: Server) {
       socket.emit('room_list', roomManager.getRoomList());
     });
 
+    socket.on('arrange_hand', (reply: unknown) => {
+      if (typeof reply !== 'function' || !socket.userId || !socket.currentRoomId) return;
+      const room = roomManager.getRoom(socket.currentRoomId);
+      if (!room) return;
+      // Reply privately to the requesting player, never broadcast their hand.
+      reply(room.getArrangedHand(socket.userId));
+    });
+
     socket.on('hint', (data?: { currentCardIds?: number[] }) => {
       if (!socket.userId || !socket.currentRoomId) return;
       const room = roomManager.getRoom(socket.currentRoomId);
@@ -274,8 +283,8 @@ export function setupSocketHandlers(io: Server) {
       const currentCardIds = Array.isArray(data?.currentCardIds)
         ? data.currentCardIds.filter(Number.isInteger)
         : [];
-      const cards = room.getHintCards(socket.userId, currentCardIds);
-      socket.emit('hint_result', { cards });
+      const result = room.requestHint(socket.userId, currentCardIds);
+      if (result) socket.emit('hint_result', result);
     });
 
     socket.on('declare_play', (data: { cards: any[] }, reply: any) => {

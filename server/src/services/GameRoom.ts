@@ -251,6 +251,23 @@ export class GameRoom {
     }
   }
 
+  getArrangedHand(playerId: string): CardPattern[] | null {
+    if (!this.state || this.state.phase !== GamePhase.Playing || !this.hasPlayer(playerId)) return null;
+    return arrangeHand(this.hands.get(playerId) || [], this.state.currentLevel);
+  }
+
+  requestHint(playerId: string, currentCardIds: number[] = []): { cards: Card[]; passed: boolean } | null {
+    if (!this.state || this.state.phase !== GamePhase.Playing) return null;
+    const playerIdx = this.players.findIndex(player => player.id === playerId);
+    if (playerIdx < 0 || playerIdx !== this.state.currentPlayerIndex) return null;
+    const cards = this.getHintCards(playerId, currentCardIds);
+    // Only a legal follower with no response may auto-pass. Leading must play.
+    const passed = cards.length === 0
+      && !canFreePlay(this.state.lastPlay, this.state.passCount)
+      && this.handlePass(playerId).success;
+    return { cards, passed };
+  }
+
   getHintCards(playerId: string, currentCardIds: number[] = []): Card[] {
     if (!this.state || this.state.phase !== GamePhase.Playing) return [];
     const playerIdx = this.players.findIndex(p => p.id === playerId);
@@ -321,6 +338,7 @@ export class GameRoom {
         level: p.level,
         seatIndex: i,
         cardCount: this.hands.get(p.id)?.length || 0,
+        isAI: p.isAI,
         isReady: p.isAI,
         isOnline: true,
       })),
@@ -366,6 +384,7 @@ export class GameRoom {
         level: p.level,
         seatIndex: this.seatAssignments.indexOf(p.id),
         cardCount: this.hands.get(p.id)?.length || 0,
+        isAI: p.isAI,
         isReady: p.isAI,
         isOnline: true,
       })),
@@ -681,7 +700,9 @@ export class GameRoom {
     });
     this.emitHandToPlayer(playerId);
 
-    if (hand.length <= 10 && !this.reportedCounts.has(playerId)) {
+    const previousReport = this.reportedCounts.get(playerId);
+    if (hand.length > 0 && hand.length <= 10
+      && (previousReport === undefined || (hand.length <= 6 && previousReport > 6))) {
       this.reportedCounts.set(playerId, hand.length);
       this.broadcastEvent('card_count_report', { playerId, count: hand.length });
     }
@@ -1041,7 +1062,7 @@ export class GameRoom {
   }
 
   private handleTimeout() {
-    if (!this.state) return;
+    if (!this.state || this.state.phase !== GamePhase.Playing) return;
     const player = this.players[this.state.currentPlayerIndex];
     if (player.isAI || !this.state.lastPlay) {
       ++this.turnGeneration;

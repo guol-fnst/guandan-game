@@ -14,6 +14,8 @@ export const DEFAULT_AI_SELECTION: AiModelSelection = {
   provider: 'fueternal',
   model: HW_AI_MODEL,
 };
+// Model requests must stay well under the 90s turn watchdog so a timed-out request
+// can still fall back to rule-based AI.
 const MODEL_REQUEST_TIMEOUT = 20000;
 // Keep room for complete JSON; this is a ceiling, not a target length.
 // Thinking is explicitly disabled below to reduce per-turn latency.
@@ -126,8 +128,8 @@ function getProviderConfig(provider: AiProvider): ProviderConfig {
     };
   }
   return {
-    baseUrl: trimTrailingSlash(process.env.DEEPSEEK_BASE_URL || DEEPSEEK_BASE_URL),
-    apiKey: process.env.DEEPSEEK_API_KEY || '',
+    baseUrl: trimTrailingSlash(process.env.HWCLOUD_BASE_URL || HWCLOUD_BASE_URL),
+    apiKey: process.env.HWCLOUD_API_KEY || '',
   };
 }
 

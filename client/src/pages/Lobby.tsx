@@ -13,6 +13,8 @@ function defaultRoomName() {
 
 const HW_AI_MODEL = 'HW-deepseek-v4.1-flash-1017';
 const LOCAL_AI_MODEL = 'Qwen3.8-27';
+const DEFAULT_HWCLOUD_MODEL = 'HW-deepseek-v4.1-flash-1017';
+const PROVIDER_LABELS: Record<AiProvider, string> = { hwcloud: 'HWCloud', local: 'Local' };
 
 function filterSelectableModels(provider: AiProvider, models: string[]) {
   return Array.from(new Set(models.filter(model => provider === 'deepseek'
@@ -306,7 +308,7 @@ export default function Lobby() {
                 <div style={styles.roomInfo}>
                   <span style={styles.roomName}>{room.name}</span>
                   <span style={styles.roomMeta}>
-                    {room.hasPassword ? '🔒 ' : ''}等级{room.level} | {room.playerCount}人/{room.maxPlayers}人 | {room.phase === GamePhase.Waiting ? '开局自动补 AI' : room.aiCount > 0 ? `AIx${room.aiCount}` : '全真人'} | {room.aiProvider}/{room.aiModel}
+                    {room.hasPassword ? '🔒 ' : ''}等级{room.level} | {room.playerCount}人/{room.maxPlayers}人 | {room.phase === GamePhase.Waiting ? '开局自动补 AI' : room.aiCount > 0 ? `AIx${room.aiCount}` : '全真人'} | {PROVIDER_LABELS[room.aiProvider]}/{room.aiModel}
                   </span>
                   {room.phase !== GamePhase.Waiting && (
                     <button

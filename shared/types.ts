@@ -73,6 +73,8 @@ export interface PlayerInfo {
   seatIndex: number;
   cardCount: number;
   reportedCardCount?: number;
+  isAI?: boolean;
+  avatarId?: string;
   isReady: boolean;
   isOnline: boolean;
 }

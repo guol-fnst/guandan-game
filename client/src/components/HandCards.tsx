@@ -10,6 +10,7 @@ interface Props {
   currentLevel: number;
   /** Portrait phones group jokers, level cards, then the four suits. */
   groupBySuit?: boolean;
+  arrangedGroups?: CardPattern[];
 }
 
 function stackOffset(index: number) {
@@ -103,8 +104,20 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
     })
     : cards;
 
-  const groups: Card[][] = [];
-  for (const card of displayedCards) {
+  const groups: Card[][] = arrangedGroups ? arrangedGroups.map(pattern => {
+    const rank = (card: Card) => {
+      const resolved = pattern.substitutions?.find(item => item.id === card.id)?.rank ?? card.rank;
+      return pattern.rank === 5 && resolved === Rank.Ace ? 1 : resolved;
+    };
+    return [...pattern.cards].sort((a, b) => {
+      if (pattern.type === 'triple_pair') {
+        const main = Number(rank(b) === pattern.rank) - Number(rank(a) === pattern.rank);
+        if (main) return main;
+      }
+      return rank(a) - rank(b) || suitOrder[b.suit] - suitOrder[a.suit] || a.id - b.id;
+    });
+  }) : [];
+  for (const card of arrangedGroups ? [] : displayedCards) {
     const last = groups[groups.length - 1];
     if (!last || groupKey(last[0]) !== groupKey(card)) groups.push([card]);
     else last.push(card);
@@ -120,9 +133,17 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
 
   return (
     <div
-      className="hand-cards"
+      className={`hand-cards${arrangedGroups ? ' is-arranged' : ''}${dragging ? ' is-dragging' : ''}`}
+      onPointerDown={startGesture}
+      onPointerMove={moveGesture}
+      onPointerUp={event => { moveGesture(event); finishGesture(event); }}
+      onPointerCancel={finishGesture}
+      onLostPointerCapture={finishGesture}
+      onClickCapture={event => { if (suppressPointerClick.current && event.detail > 0) { event.preventDefault(); event.stopPropagation(); suppressPointerClick.current = false; } }}
       style={{
         height: stackHeight,
+        '--hand-group-count': groups.length,
+        '--hand-stack-count': Math.max(1, maxStack - 1),
         ...(groupBySuit ? { '--hand-stack-rise': `${compactStackRise}px` } : {}),
       } as React.CSSProperties}
       aria-label={`手牌，共 ${cards.length} 张`}
@@ -145,8 +166,10 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
             const selected = selectedIds.has(card.id);
             return (
               <div
-                className="hand-card-slot"
+                className={`hand-card-slot${cardIndex > 0 ? ' is-stacked' : ''}`}
                 key={card.id}
+                data-card-id={card.id}
+                data-hit-order={groupIndex * 100 + group.length - cardIndex}
                 style={{
                   bottom: stackOffset(cardIndex),
                   // Keep a selected card inside its original stack layer. Raising its
@@ -169,6 +192,10 @@ export default function HandCards({ cards, selectedIds, onToggle, onToggleStack,
               </div>
             );
           })}
+          {arrangedGroups && <span className="hand-group-label">
+            {({ single: '单张', pair: '对子', triple: '三张', triple_pair: '三带二', straight: '顺子', consecutive_pair: '三连对', plane: '二连三', flush_straight: '同花顺', king_bomb: '四王炸' } as Record<string, string>)[arrangedGroups[groupIndex].type]
+              || `${group.length}炸`}
+          </span>}
         </div>
       ))}
     </div>
